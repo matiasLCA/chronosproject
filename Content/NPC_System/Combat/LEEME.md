@@ -40,6 +40,14 @@ Lo que el Director espera de él (es lo que se reconstruyó aquí; tu versión r
 
 ## 3. Al abrir el proyecto
 
+### 3.0 Estado del plugin aquí (actualizado tras instalarlo)
+
+En la copia de Matías APS ya está instalado en `Plugins\Marketplace\AdaptivePathfindingSystem\` (fuente + icono + `Binaries\Win64\UnrealEditor-AdaptivePathfindingSystem.dll` y `UnrealEditor.modules` con `BuildId 55116800`, los que pasaste). Con él cargado: los dos controllers tienen padre `APS_AIController`, `ABP_EnemyCombat`, `BP_EnemyAIController` y `BP_CemeteryVisitorController` compilan, y el Vigilante detecta, persigue, se reposiciona, ataca y **acierta** a John (probado en PIE). Para que eso pasara hubo que arreglar tres cosas que te conviene revisar en tu copia:
+
+1. `BP_Enemy_CultGuardian` → Class Defaults → **AI Controller Class = `BP_EnemyAIController`**, y la instancia colocada en el mapa sin override a None (aquí estaba en None en los dos sitios y el Vigilante no se movía).
+2. **Hace falta navegación**: `APS_NavigationData` hereda de `RecastNavMesh`, así que sin un `NavMeshBoundsVolume` `MoveToActor` devuelve Failed al instante (`LastPathFailed` true, estado Chase sin moverse). Aquí hay un volumen de prueba de 70 × 50 m sobre la zona de los enemigos y el `RecastNavMesh` en **Runtime Generation = Dynamic** (con Static, en este mapa de World Partition, PIE arrancaba sin navmesh: "Unable to find RecastNavMesh instance"). No hay agente APS configurado en Project Settings → Navigation System (`SupportedAgents` vacío): la navmesh es la Recast estándar y tu `APSRouteFollower` (un `PathFollowingComponent` normal) la sigue bien. Si quieres rutas APS de verdad, pásanos tu `Config/DefaultEngine.ini` (sección `[/Script/NavigationSystem.NavigationSystemV1]`) o dinos radio/altura del agente y la clase de NavData.
+3. La cápsula de John en Custom con Visibility Block (punto 3.4).
+
 ### 3.1 El plugin carga
 
 - Edit → Plugins → "Adaptive Pathfinding System" habilitado.
@@ -60,7 +68,7 @@ Si `BP_EnemyAIController` o `ABP_EnemyCombat` muestran nodos con "In use pin no 
 ### 3.4 `per_bp` (John)
 
 - Componentes: `Health` (AC_Health: Max Health 100, Start At Max Health, **Enable Out Of Combat Regen = true**) y `MeleeCombat` (AC_MeleeCombat: Damage Per Hit 25, Max Reach 160, Attack Cooldown 1,15, Kick ×1,4 / 185 / 2,5 s, Block 0,7 / 65°, Speed Bonus 150 → 600 +0,5, montages `AM_John_BasicPunch`, `LeftPunch`, `Hook`, `Kick`, `Guard`, `BlockReaction`).
-- **CollisionCylinder → Collision → Visibility = Block.** Es lo único "raro" de la integración: la cápsula venía en Ignore (perfil Pawn por defecto) y tu trazo esférico de `UpdateHitWindow` usa el canal Visibility, así que el enemigo atravesaba a John y nunca le pegaba. Con Block, pega. Si en tu copia John sí recibía golpes, tu `per_bp` ya tenía algo que bloqueaba Visibility (cápsula o malla).
+- **CollisionCylinder → Collision Presets = Custom, con Visibility = Block y Camera = Ignore** (el resto en Block, igual que el perfil Pawn). Es lo único "raro" de la integración: la cápsula venía con el perfil Pawn (Visibility Ignore) y tu trazo esférico de `UpdateHitWindow` usa el canal Visibility, así que el enemigo atravesaba a John y nunca le pegaba. OJO: cambiar solo la respuesta dejando el perfil en "Pawn" no sirve (el motor vuelve a leer el perfil al crear la instancia); tiene que quedar en Custom. Tu `BP_EnemyBase` ya tiene la cápsula en Custom con todo en Block, por eso a los enemigos sí se les pega. Comprobado en PIE con el trazo dibujado: con Pawn las esferas atraviesan a John sin impacto; con Custom el Vigilante acierta todos los golpes (4 de 4).
 - **Caminar al golpear**: `factorVelocidad` multiplica por `factorGolpe()`: mientras `GetGameTimeInSeconds < MeleeCombat.NextAttackTime` (montage + recuperación de puñetazo o patada) limita la velocidad a `velocidadAlGolpear` (Class Defaults, Combate, 600): corriendo a 1000 se baja a 600; caminando no cambia. Probado en PIE (factor 0,6 a los 0,3 s del golpe, 1 al terminar).
 - Inputs (eventos de tecla del Blueprint, no Enhanced Input): clic izquierdo → `atacar` (`TryAttack`; si John lleva la escoba, el clic barre y no ataca), clic derecho mantenido → `empezarBloqueo` / `terminarBloqueo` (`StartBlock` / `EndBlock`), R → `patear` (`TryKick`).
 - Eventos: `EventAnyDamage` → `recibirDanoCombate` (ResolveIncomingDamage → Health.TakeDamage); `OnHealthChanged(Health)` → `UpdatePlayerHealthDisplay`; `OnDeath(Health)` → `morirJugador` → `GS_Chronos.perder()` (pantalla "HAS PERDIDO", el texto habla de reputación: pendiente de parametrizar). `iniciarCombate` (InitializeCombatReferences + InitializeHealthHUD) va al final del BeginPlay. HUD: `WBP_CombatHealthBar` 260×12, anclado abajo a la izquierda, posición (32, −42).
