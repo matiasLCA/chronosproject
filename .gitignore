@@ -72,3 +72,6 @@ Plugins/**/Intermediate/*
 
 # Cache files for the editor to use
 DerivedDataCache/*
+
+# Fuentes mp3 de los SoundWave de Content/SONIDOS (los assets importados si van en git)
+SonidosFuente/
