@@ -1,6 +1,6 @@
 # Animación de despertar (inicio del juego)
 
-Muestra hecha el 2026-11-07 a partir del target `AquiTestDespertar` de `CHRONOSALPHA` (corregida el mismo día). Todavía no está conectada al juego.
+Muestra hecha el 2026-11-07 a partir del target `AquiTestDespertar` de `CHRONOSALPHA` (corregida el mismo día). **Conectada al juego el 2026-11-09** como montaje en `per_bp` (ver "Implementación hecha" abajo).
 
 ## Qué hay en esta carpeta
 
@@ -33,7 +33,15 @@ Para verla: abrir `LS_Despertar` (con `CHRONOSALPHA` cargado) y darle Play. Con 
 | 8,7–9,3 s | 260–280 | Da un pasito (pie izquierdo, luego derecho) y llega a la pose idle |
 | 9,3–10 s | 280–300 | Pose default de `per_bp`, quieto; la hoja queda vertical en la mano izquierda, junto al muslo |
 
-## Implementación rápida (recomendada: montaje en `per_bp`)
+## Implementación hecha (2026-11-09)
+
+- `AM_Despertar` (en esta carpeta): montaje de `AS_Despertar_Cuerpo`, slot `DefaultSlot` (el nodo Slot de `abp_per` va al final del AnimGraph, así que mientras suena pisa los IK), 10 s. Sin notifies: los tiempos van por timer.
+- `per_bp` (Class Defaults, categoría "Despertar"): `iniciarDespertar` se llama al final del BeginPlay salvo `GS_Chronos.saltarDespertar` (categoría Pruebas, para probar otras cosas sin la intro). Pone a John en `posicionDespertar` **(89845, −24995, 22281)** + `subidaMallaDespertar` 20,6 cm (porque la malla de `per_bp` ahora va a Z −100,7 y la animación se horneó con la malla a −80,1), yaw 180 (`yawDespertar`), sin input ni movimiento; crea un `BP_Lista` en `posicionListaDespertar` (89820, −24930, 22274); `PlayAnimMontage(montajeDespertar)` y un timer de 0,02 s (`actualizarDespertar`): a `tiempoAgarreLista` 6,9 s `agarrarListaDespertar` (pega la hoja a `hand_l` con la transformación relativa de la tabla de abajo y la guarda en `per_bp.lista`), entre `tiempoBajadaDespertar` 7,7 y `tiempoFinDespertar` 9,4 s baja la malla hasta su Z normal, y a 9,4 s `terminarDespertar`: si no hay suelo a 4 m debajo lo manda a `posicionRespaldoDespertar` (65200, −27850, 22256, dentro del crematorio), Walking, input, esconde la hoja (queda en `per_bp.lista`, se usa con G) y muestra `UI/WBP_Tutorial` (teclas de a dos, un par por lado, 5 s cada paso con fundidos).
+- **La casa se movió** desde que se grabó la secuencia: la cama `Bed` está ahora en (89942, −24976, 22250) y `Desk_D` en (89746, −24906), 29.370 uu más al oeste que cuando se midió (119320). El target `AquiTestDespertar` y el spawnable de `LS_Despertar` siguen en la posición vieja, que hoy cae dentro de la colisión de las montañas (`SM_Iceland_Eroded_Mountain28/6`): John se caía al vacío. `posicionDespertar` y la hoja se desplazaron lo mismo que el escritorio. Probado en PIE en la casa nueva el 2026-11-09: John despierta sobre la cama, se sienta en el borde libre, toma la hoja del escritorio y queda de pie junto a él (capturas `Saved/Screenshots/WindowsEditor/rev_intro_*.png`). Si algún día se vuelve a mover la casa, ajustar `posicionDespertar` (y `posicionListaDespertar`) en Class Defaults de `per_bp`. Para ver `LS_Despertar` en su sitio habría que mover su spawnable y el target a la casa nueva.
+- **Espera de carga y cámara (2026-11-09, mañana)**: desde el menú la casa se carga del disco (World Partition), así que `iniciarDespertar` deja la pantalla en negro y no arranca el montaje hasta que `zonaDespertarCargada` ve cargados la cama, el suelo y el escritorio (`puntosCargaDespertar`, relativos a `posicionDespertar`) durante 1 s (`margenCargaDespertar`; máximo 30 s). Después `empezarAnimDespertar` y, 0,4 s más tarde, `aclararDespertar` (fundido de 1,5 s). Durante la intro se ve desde una cámara fija en la esquina del dormitorio (`crearCamaraDespertar`, `offsetCamaraDespertar` / `objetivoCamaraDespertar`); al terminar vuelve a la cámara del jugador en 1,2 s (`soltarCamaraDespertar`). Con `GS_Chronos.saltarDespertar` activo no hay intro y, entrando por el menú, John cae en el origen (no hay PlayerStart).
+- El menú principal (`UI/Menu`, botón "Partida nueva") solo abre `CHRONOSALPHA`, así que la intro arranca con el nivel (también con "Jugar de nuevo" de `WBP_Derrota`).
+
+## Receta original (2026-11-07; ya aplicada arriba, las coordenadas son las viejas)
 
 Datos que hacen falta, ya medidos:
 
@@ -75,4 +83,5 @@ Alternativa: **como cinemática** (sin tocar `abp_per`). Colocar `LS_Despertar` 
 - La cara no tiene expresión.
 - La transición de la hoja del escritorio a la palma (202–212) es rápida y se ve algo forzada.
 - Para alcanzar el escritorio se inclina bastante: quedaría más natural con una mesita de luz más cerca.
-- Al final la hoja queda en la mano junto al muslo; en el juego habría que guardarla en `per_bp.lista` o esconderla.
+- Al final la hoja queda en la mano junto al muslo; en el juego se esconde y queda en `per_bp.lista` (hecho el 2026-11-09).
+- `LS_Despertar` y `AquiTestDespertar` siguen en la posición vieja de la casa (119320): la secuencia en el editor se ve dentro de la montaña.
