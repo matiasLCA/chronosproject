@@ -1,0 +1,20 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Chronos Guardado",
+	"Description": "Guarda las partidas con una firma y las comprueba antes de cargarlas, para que un archivo dañado no cierre el juego.",
+	"Category": "Chronos",
+	"CreatedBy": "Chronos",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "ChronosGuardado",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
