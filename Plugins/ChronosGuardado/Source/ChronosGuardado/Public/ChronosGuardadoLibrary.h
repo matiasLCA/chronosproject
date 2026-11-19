@@ -7,26 +7,70 @@
 class USaveGame;
 
 /**
- * Guardado seguro de partidas.
- * El cargador del motor (LoadGameFromSlot) se cierra con un assert si el archivo no es un guardado
- * de Unreal (por ejemplo, texto o bytes al azar). Estas funciones leen los bytes del archivo y los
- * comprueban ANTES de dárselos al motor: si algo no cuadra, devuelven "inválido" sin cargar nada.
+ * Biblioteca de guardado seguro de The Chronos Curse.
+ *
+ * Valida la integridad de los archivos de partida antes de
+ * entregarlos al sistema de carga de Unreal Engine.
+ *
+ * Permite preparar partidas firmadas en memoria, realizar
+ * guardados con CRC32, verificar archivos y cargarlos
+ * de forma segura.
  */
 UCLASS()
-class CHRONOSGUARDADO_API UChronosGuardadoLibrary : public UBlueprintFunctionLibrary
+class CHRONOSGUARDADO_API UChronosGuardadoLibrary
+    : public UBlueprintFunctionLibrary
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
 public:
-	/** Guarda la partida en el slot con una firma al final (control de integridad). */
-	UFUNCTION(BlueprintCallable, Category = "Chronos|Guardado")
-	static bool GuardarPartidaFirmada(USaveGame* Partida, const FString& NombreSlot, int32 IndiceUsuario = 0);
 
-	/** Comprueba el archivo del slot sin cargarlo: cabecera de guardado, clase esperada y firma. */
-	UFUNCTION(BlueprintCallable, Category = "Chronos|Guardado")
-	static bool ComprobarArchivoPartida(const FString& NombreSlot, TSubclassOf<USaveGame> ClaseEsperada, int32 IndiceUsuario = 0);
+    /**
+     * Serializa y firma una partida sin escribir en disco.
+     *
+     * Permite integrar la escritura atomica de partidas
+     * y conservar las miniaturas del sistema de guardado.
+     *
+     * Devuelve true si los datos se prepararon correctamente.
+     */
+    static bool PrepararPartidaFirmada(
+        USaveGame* Partida,
+        TArray<uint8>& Datos
+    );
 
-	/** Carga el slot solo si pasa la comprobación. Si no, devuelve None (y no carga nada). */
-	UFUNCTION(BlueprintCallable, Category = "Chronos|Guardado")
-	static USaveGame* CargarPartidaSegura(const FString& NombreSlot, TSubclassOf<USaveGame> ClaseEsperada, int32 IndiceUsuario = 0);
+    /**
+     * Guarda una partida firmada en el slot indicado.
+     * Agrega una firma CRC32 para comprobar su integridad.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Chronos|Guardado")
+    static bool GuardarPartidaFirmada(
+        USaveGame* Partida,
+        const FString& NombreSlot,
+        int32 IndiceUsuario = 0
+    );
+
+    /**
+     * Comprueba la integridad de un archivo de partida
+     * sin cargar objetos.
+     *
+     * Verifica cabecera, clase esperada y firma.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Chronos|Guardado")
+    static bool ComprobarArchivoPartida(
+        const FString& NombreSlot,
+        TSubclassOf<USaveGame> ClaseEsperada,
+        int32 IndiceUsuario = 0
+    );
+
+    /**
+     * Carga una partida solo si supera las comprobaciones.
+     *
+     * Devuelve nullptr cuando el archivo es invalido,
+     * esta danado o no corresponde a la clase esperada.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Chronos|Guardado")
+    static USaveGame* CargarPartidaSegura(
+        const FString& NombreSlot,
+        TSubclassOf<USaveGame> ClaseEsperada,
+        int32 IndiceUsuario = 0
+    );
 };
