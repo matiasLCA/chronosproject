@@ -11,6 +11,10 @@ class CHRONOSHUD_API UChronosStamina : public UBlueprintFunctionLibrary
     GENERATED_BODY()
 
 public:
+    UFUNCTION(BlueprintCallable, Category="Chronos|Stamina")
+    static void RestoreStamina(ACharacter* John);
+    UFUNCTION(BlueprintPure, Category="Chronos|Stamina")
+    static double ApplyConsumableSpeed(ACharacter* John, double BaseFactor);
     UFUNCTION(BlueprintCallable, Category="YukoDev|Stamina")
     static void UpdateStamina(ACharacter* John, double DeltaSeconds);
 

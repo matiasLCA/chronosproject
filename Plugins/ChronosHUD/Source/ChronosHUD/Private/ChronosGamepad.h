@@ -8,6 +8,7 @@
 class APlayerController;
 class IInputProcessor;
 class UInputMappingContext;
+class UChronosOptionsMenu;
 
 enum class EChronosGamepadGlyphs : uint8 { Automatic, PlayStation, Xbox };
 
@@ -52,6 +53,7 @@ public:
     EChronosGamepadGlyphs Glyphs() const { return PreferredGlyphs; }
     bool Commit(bool bAlternate, EChronosGamepadGlyphs Glyphs, const TMap<FName, FKey>& Bindings);
     void OnInput(FKey Key, FInputDeviceId Device);
+    TWeakObjectPtr<UChronosOptionsMenu> OptionsMenu;
     FName MainMenuFocus = TEXT("BTN-NuevaPartida");
 
 private:

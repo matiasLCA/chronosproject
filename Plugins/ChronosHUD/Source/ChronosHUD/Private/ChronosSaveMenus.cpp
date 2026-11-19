@@ -1,4 +1,5 @@
 #include "ChronosSaveMenus.h"
+#include "ChronosInventory.h"
 #include "ChronosGamepad.h"
 #include "ChronosMenuArt.h"
 #include "ChronosPlayerSave.h"
@@ -173,7 +174,7 @@ namespace
         TSharedRef<SBox> Button(const FText& Label, FOnClicked Click, TAttribute<bool> Enabled = true) const
         {
             return SNew(SBox).MinDesiredHeight(42)
-                [SNew(SButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).HAlign(HAlign_Center).VAlign(VAlign_Center)
+                [SNew(SChronosMenuButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).HAlign(HAlign_Center).VAlign(VAlign_Center)
                     .OnClicked(MoveTemp(Click)).IsEnabled(MoveTemp(Enabled))
                     [SNew(STextBlock).Text(Label).Font(Small).ColorAndOpacity(TextColor)]];
         }
@@ -303,14 +304,26 @@ void UChronosMainMenu::NativeConstruct()
 {
     SetIsFocusable(true);
     Super::NativeConstruct();
+    WidgetTree->ForEachWidget([this](UWidget* Widget)
+    {
+        if (auto* Button = Cast<UButton>(Widget)) MenuButtons.Add(Button);
+    });
     auto* Player = GetOwningPlayer();
     const auto* Pad = UChronosGamepad::Get(Player);
     if (auto* First = GetWidgetFromName(Pad ? Pad->MainMenuFocus : FName(TEXT("BTN-NuevaPartida"))))
         First->SetUserFocus(Player);
 }
 
+void UChronosMainMenu::NativeTick(const FGeometry& Geometry, float DeltaSeconds)
+{
+    Super::NativeTick(Geometry, DeltaSeconds);
+    MenuFocus.Set(MenuButtons, GetOwningPlayer());
+}
+
 void UChronosMainMenu::NativeDestruct()
 {
+    MenuFocus.Set(nullptr);
+    MenuButtons.Reset();
     auto* Player = GetOwningPlayer();
     if (auto* Pad = UChronosGamepad::Get(Player))
         for (FName Name : {FName(TEXT("BTN-NuevaPartida")), FName(TEXT("BTN-Cargarpartida")), FName(TEXT("BTN-Opciones")), FName(TEXT("BTN-Cuaderno"))})
@@ -433,8 +446,25 @@ bool UChronosSaveBrowser::LoadSlot(int32 Number)
 }
 
 // YukoDev — REDISEÑO DE MENÚS
+namespace
+{
+    TArray<TWeakObjectPtr<UChronosPauseMenu>> ActivePauseMenus;
+}
+
+bool UChronosPauseMenu::IsOpen(const UObject* Context)
+{
+    const auto* World = Context ? Context->GetWorld() : nullptr;
+    return World && ActivePauseMenus.ContainsByPredicate([World](const auto& Entry)
+    {
+        const auto* Menu = Entry.Get();
+        return Menu && Menu->GetWorld() == World && Menu->IsInViewport();
+    });
+}
+
 void UChronosPauseMenu::NativeConstruct()
 {
+    UChronosInventory::CloseForModal(this);
+    ActivePauseMenus.AddUnique(this);
     SetIsFocusable(true);
     Super::NativeConstruct();
     auto* Resume = Cast<UButton>(GetWidgetFromName(TEXT("RESUME")));
@@ -492,7 +522,9 @@ void UChronosPauseMenu::NativeTick(const FGeometry& Geometry, float DeltaSeconds
     if (Focused && Focused != PreviousFocus.Get()) bPointerHighlight = Hovered == Focused;
     PreviousHover = Hovered;
     PreviousFocus = Focused;
-    UButton* Next = bPointerHighlight ? Hovered : Focused;
+    const auto* Pad = UChronosGamepad::Get(GetOwningPlayer());
+    if (Pad && Pad->IsGamepadActive()) bPointerHighlight = false;
+    UButton* Next = bPointerHighlight && Hovered ? Hovered : Focused;
     if (Next == SelectedButton.Get()) return;
     SelectedButton = Next;
     for (const auto& Entry : PauseButtons)
@@ -519,6 +551,7 @@ FReply UChronosPauseMenu::NativeOnPreviewKeyDown(const FGeometry& Geometry, cons
 
 void UChronosPauseMenu::NativeDestruct()
 {
+    ActivePauseMenus.Remove(this);
     if (Browser) Browser->RemoveFromParent();
     Browser = nullptr;
     Super::NativeDestruct();
@@ -543,6 +576,7 @@ void UChronosPauseMenu::FocusOptionsEntry()
 }
 
 void UChronosPauseMenu::OpenSaveBrowser() { OpenBrowser(true); }
+
 void UChronosPauseMenu::OpenLoadBrowser()
 {
     if (auto* Sound = FindFunction(TEXT("sonarClick")); Sound && Sound->NumParms == 0) ProcessEvent(Sound, nullptr);

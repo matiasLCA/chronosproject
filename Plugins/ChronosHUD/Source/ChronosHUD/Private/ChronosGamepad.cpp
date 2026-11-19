@@ -32,10 +32,17 @@ namespace
             if (!Event.IsRepeat() && Owner.IsValid()) Owner->OnInput(Event.GetKey(), Event.GetInputDeviceId());
             return false;
         }
-        bool HandleAnalogInputEvent(FSlateApplication&, const FAnalogInputEvent& Event) override
+        bool HandleAnalogInputEvent(FSlateApplication& Slate, const FAnalogInputEvent& Event) override
         {
-            if (FMath::Abs(Event.GetAnalogValue()) >= .32f && Owner.IsValid())
+            const auto* Pad = Owner.Get();
+            if (!Pad) return false;
+            if (FMath::Abs(Event.GetAnalogValue()) >= .32f)
                 Owner->OnInput(Event.GetKey(), Event.GetInputDeviceId());
+
+            // Handle a section change before Slate's geometric navigation reaches the focused control.
+            if (Event.GetKey() == EKeys::Gamepad_LeftX
+                && Slate.GetUserIndexForPlatformUser(Pad->GetLocalPlayer()->GetPlatformUserId()) == Event.GetUserIndex())
+                if (auto* Menu = Pad->OptionsMenu.Get()) return Menu->HandleHorizontalStick(Slate, Event);
             return false;
         }
         bool HandleMouseMoveEvent(FSlateApplication&, const FPointerEvent& Event) override
@@ -87,6 +94,10 @@ const TArray<FChronosPadBinding>& UChronosGamepad::Defaults(bool bAlternateProfi
         {TEXT("Chronos.Drop"), LOCTEXT("Drop", "Soltar objeto"), EKeys::Gamepad_FaceButton_Top},
         {TEXT("Chronos.HUDMode"), LOCTEXT("HUDMode", "Cambiar modo del HUD"), bAlternate ? EKeys::Gamepad_FaceButton_Right : EKeys::Gamepad_RightThumbstick},
         {TEXT("Chronos.Pause"), LOCTEXT("Pause", "Pausa"), EKeys::Gamepad_Special_Right},
+        {TEXT("Chronos.Inventory"), LOCTEXT("Inventory", "Inventario"), bAlternate ? EKeys::Gamepad_LeftThumbstick : EKeys::Gamepad_LeftShoulder},
+        {TEXT("Chronos.PickupBeer"), LOCTEXT("PickupBeer", "Recoger cerveza"), EKeys::Gamepad_FaceButton_Left},
+        {TEXT("Chronos.DrinkItem"), LOCTEXT("DrinkItem", "Beber objeto equipado"), bAlternate ? EKeys::Gamepad_RightShoulder : EKeys::Gamepad_RightTrigger},
+        {TEXT("Chronos.PocketItem"), LOCTEXT("PocketItem", "Guardar objeto equipado"), bAlternate ? EKeys::Gamepad_RightTrigger : EKeys::Gamepad_RightShoulder},
         };
     };
     static const auto StandardBindings = Make(false);
@@ -266,13 +277,15 @@ void UChronosGamepad::Rebuild()
 
 bool UChronosGamepad::Commit(bool bAlternate, EChronosGamepadGlyphs Glyphs, const TMap<FName, FKey>& Bindings)
 {
-    TSet<FKey> Used;
+    TMultiMap<FKey, FName> Used;
     for (const auto& Item : Defaults(bAlternate))
     {
         const auto* Override = Bindings.Find(Item.Name);
         const FKey Key = Override ? *Override : Item.Key;
-        if (!CanRebind(Key) || Used.Contains(Key)) return false;
-        Used.Add(Key);
+        TArray<FName> SameKey;
+        Used.MultiFind(Key, SameKey);
+        if (!CanRebind(Key) || SameKey.ContainsByPredicate([&](FName Name) { return !ChronosControls::CanShare(Name, Item.Name); })) return false;
+        Used.Add(Key, Item.Name);
     }
     const auto Class = LoadClass<UChronosOptionsSave>(nullptr, SaveClass);
     auto* Save = Cast<UChronosOptionsSave>(UChronosOptionsSave::LoadOptionsForWrite(Class));

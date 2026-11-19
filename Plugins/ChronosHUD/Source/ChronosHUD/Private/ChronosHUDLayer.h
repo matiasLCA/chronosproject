@@ -11,6 +11,9 @@
 class APlayerController;
 class UFont;
 class UChronosJournal;
+class UChronosContext;
+class UChronosInventory;
+class UChronosLetter;
 class UTexture;
 class UTextureRenderTarget2D;
 
@@ -67,6 +70,7 @@ public:
     float Battery = -1;
     float ShownHealth = 0;
     float Stamina = -1;
+    float ShownStamina = -1;
     float StaminaOpacity = 0;
     float HealthOpacity = 0;
     float BatteryOpacity = 0;
@@ -75,6 +79,11 @@ public:
     FString MapKeyText;
     FString JournalKeyText;
     FString ModeKeyText;
+    FString InventoryKeyText;
+    FKey MapHintKey;
+    FKey JournalHintKey;
+    FKey ModeHintKey;
+    FKey InventoryHintKey;
     TOptional<FVector2D> WorldMarker;
     TOptional<FVector> Waypoint;
     FString WaypointLabel;
@@ -83,9 +92,11 @@ public:
     FKey MapCloseKey;
     FKey PadMapCloseKey;
     bool bNarrativeHidden = false;
+    TWeakObjectPtr<UChronosLetter> LetterReader;
     EChronosHUDMode Mode = EChronosHUDMode::Normal;
 
 protected:
+    virtual void NativeTick(const FGeometry& Geometry, float DeltaTime) override;
     virtual FReply NativeOnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& Event) override;
     virtual FReply NativeOnMouseButtonUp(const FGeometry& Geometry, const FPointerEvent& Event) override;
     virtual FReply NativeOnMouseMove(const FGeometry& Geometry, const FPointerEvent& Event) override;
@@ -112,6 +123,9 @@ private:
     bool bMapDragged = false;
     FVector2D MapCenter = (ChronosAtlas::MapMin + ChronosAtlas::MapMax) * .5;
     double MapZoom = 1.0;
+    FVector2D PadMapCursor = FVector2D(.5);
+    FVector2D PadCursorAxis = FVector2D::ZeroVector;
+    FVector2D PadPanAxis = FVector2D::ZeroVector;
 
     UPROPERTY(Transient)
     TMap<FString, TObjectPtr<UTexture>> Textures;
@@ -136,6 +150,7 @@ public:
     virtual TStatId GetStatId() const override;
     virtual void Deinitialize() override;
     virtual void OnWorldBeginPlay(UWorld& World) override;
+    void SetLetterReader(UChronosLetter* Reader);
 
     UFUNCTION(BlueprintCallable, Category="Chronos|HUD")
     void SetHUDMode(EChronosHUDMode NewMode);
@@ -163,7 +178,15 @@ private:
     TObjectPtr<UChronosHUDLayer> HUD;
 
     UPROPERTY(Transient)
+    TObjectPtr<UChronosContext> Context;
+
+    UPROPERTY(Transient)
     TObjectPtr<UChronosJournal> Journal;
+    UPROPERTY(Transient) TObjectPtr<UChronosInventory> Inventory;
+    UPROPERTY(Transient) TObjectPtr<class UEnhancedInputComponent> InventoryInput;
+    TWeakObjectPtr<APlayerController> InventoryPlayer;
+    void BindInventoryInput(APlayerController* PC);
+    void ToggleInventory();
 
     TWeakObjectPtr<UObject> OpenList;
     FDelegateHandle PoemSpawnHandle;
@@ -186,6 +209,7 @@ private:
     float AtlasAt = 0;
     bool bBatteryActive = false;
     bool bHideMarkers = false;
+    bool bUrnsRestored = false;
     bool bMapInput = false;
     bool bSavedShowCursor = false;
     TOptional<FVector> RoutedDestination;

@@ -1,9 +1,11 @@
 #include "ChronosControls.h"
 #include "ChronosGamepad.h"
-#include "ChronosMenuArt.h"
+#include "ChronosMenuFocus.h"
+#include "Types/NavigationMetaData.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
+#include "Brushes/SlateNoResource.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/NativeWidgetHost.h"
@@ -32,6 +34,23 @@
 
 namespace ChronosControls
 {
+    const UInputMappingContext* ItemContext()
+    {
+        static TWeakObjectPtr<UInputMappingContext> Cached;
+        if (!Cached.IsValid()) Cached = LoadObject<UInputMappingContext>(nullptr,
+            TEXT("/Game/Characters/input/interaction/IMC_ItemControls.IMC_ItemControls"), nullptr, LOAD_NoWarn);
+        return Cached.Get();
+    }
+
+    bool CanShare(FName A, FName B)
+    {
+        const auto IsHeld = [](FName Name) { return Name == TEXT("Chronos.DrinkItem") || Name == TEXT("Chronos.PocketItem"); };
+        const auto IsCombat = [](FName Name) { return Name == TEXT("Chronos.Attack") || Name == TEXT("Chronos.Kick") || Name == TEXT("Chronos.Block"); };
+        return (IsHeld(A) && IsCombat(B)) || (IsHeld(B) && IsCombat(A))
+            || (A == TEXT("Chronos.PickupBeer") && B == TEXT("Chronos.Interact"))
+            || (B == TEXT("Chronos.PickupBeer") && A == TEXT("Chronos.Interact"));
+    }
+
     const UInputMappingContext* Context()
     {
         static TWeakObjectPtr<UInputMappingContext> Cached;
@@ -47,6 +66,9 @@ namespace ChronosControls
         const UInputMappingContext* MappingContext = Context();
         if (UserSettings && MappingContext && !UserSettings->IsMappingContextRegistered(MappingContext))
             UserSettings->RegisterInputMappingContext(MappingContext);
+        const auto* Consumables = ItemContext();
+        if (UserSettings && Consumables && !UserSettings->IsMappingContextRegistered(Consumables))
+            UserSettings->RegisterInputMappingContext(Consumables);
         return UserSettings;
     }
 
@@ -64,7 +86,31 @@ namespace
 {
     const FSlateColor Gold(FLinearColor(FColor(202, 174, 132)));
     const FSlateColor Ivory(FLinearColor(FColor(239, 218, 181)));
+
+    const FScrollBarStyle& ControlsScrollBar()
+    {
+        static const FScrollBarStyle Style = FScrollBarStyle()
+            .SetVerticalBackgroundImage(FSlateRoundedBoxBrush(FLinearColor(.027f, .018f, .012f), 4.f,
+                FLinearColor(.24f, .16f, .078f), 1.f))
+            .SetVerticalTopSlotImage(FSlateNoResource())
+            .SetVerticalBottomSlotImage(FSlateNoResource())
+            .SetNormalThumbImage(FSlateRoundedBoxBrush(FLinearColor(.47f, .32f, .16f), 3.f, FLinearColor(.73f, .54f, .29f), 1.f))
+            .SetHoveredThumbImage(FSlateRoundedBoxBrush(FLinearColor(.65f, .47f, .24f), 3.f, FLinearColor(.85f, .66f, .39f), 1.f))
+            .SetDraggedThumbImage(FSlateRoundedBoxBrush(FLinearColor(.74f, .54f, .28f), 3.f, FLinearColor(.91f, .74f, .45f), 1.f))
+            .SetThickness(10.f);
+        return Style;
+    }
+
     constexpr double CaptureSeconds = 12.;
+
+    int32 DisplayPriority(FName Action)
+    {
+        if (Action == TEXT("Chronos.Inventory")) return 0;
+        if (Action == TEXT("Chronos.PickupBeer")) return 1;
+        if (Action == TEXT("Chronos.DrinkItem")) return 2;
+        if (Action == TEXT("Chronos.PocketItem")) return 3;
+        return 4;
+    }
 
     // YukoDev — CONTROLES
     FSlateBrush ButtonBrush(const TCHAR* Directory, const FString& Name, FSlateColor Tint = FSlateColor(FLinearColor::White))
@@ -163,12 +209,16 @@ namespace
         SLATE_BEGIN_ARGS(SChronosControlList) {}
             SLATE_ARGUMENT(TWeakObjectPtr<APlayerController>, Player)
             SLATE_ARGUMENT(FSlateFontInfo, RowFont)
+            SLATE_ATTRIBUTE(float, MenuScale)
+            SLATE_ATTRIBUTE(float, BindingScale)
         SLATE_END_ARGS()
 
         void Construct(const FArguments& Args)
         {
             Player = Args._Player;
             Font = Args._RowFont;
+            MenuScale = Args._MenuScale;
+            BindingScale = Args._BindingScale;
             Font.Size = FMath::Min(Font.Size, 22.f);
             KeyFont = Font;
             KeyFont.Size = 17;
@@ -183,6 +233,10 @@ namespace
                 [
                     SAssignNew(List, SScrollBox)
                     .AllowOverscroll(EAllowOverscroll::No)
+                    .ScrollBarStyle(&ControlsScrollBar())
+                    .ScrollBarThickness(FVector2D(10, 10))
+                    .ScrollWhenFocusChanges(EScrollWhenFocusChanges::InstantScroll)
+                    .NavigationScrollPadding(10)
                 ]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 8)
                 [
@@ -225,28 +279,33 @@ namespace
                 return;
             }
 
-            for (const FEnhancedActionKeyMapping& Mapping : Context->GetMappings())
+            TArray<FEnhancedActionKeyMapping> Mappings = Context->GetMappings();
+            if (const auto* Items = ChronosControls::ItemContext()) Mappings.Append(Items->GetMappings());
+            Mappings.StableSort([](const auto& A, const auto& B)
+                { return DisplayPriority(A.GetMappingName()) < DisplayPriority(B.GetMappingName()); });
+            for (const FEnhancedActionKeyMapping& Mapping : Mappings)
             {
                 const UPlayerMappableKeySettings* Info = Mapping.GetPlayerMappableKeySettings();
                 const FName Name = Mapping.GetMappingName();
                 if (!Info || Name.IsNone() || !Mapping.IsPlayerMappable()) continue;
                 const FKey Saved = ChronosControls::Key(Player.Get(), Name, Mapping.Key);
                 const int32 Index = Rows.Add({Name, Info->DisplayName, Mapping.Key, Saved, Saved});
-                List->AddSlot().Padding(0, 1, 14, 1)
+                List->AddSlot().Padding(0, 2, 32, 2)
                 [
                     SNew(SHorizontalBox)
                     + SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
-                    [SNew(STextBlock).Text(Info->DisplayName).Font(Font).ColorAndOpacity(Gold)]
+                    [SNew(STextBlock).Text(Info->DisplayName).Font_Lambda([this] { return ScaledFont(Font); }).ColorAndOpacity(Gold)]
                     + SHorizontalBox::Slot().AutoWidth()
                     [
-                        SNew(SBox).WidthOverride(197).HeightOverride(32)
+                        SNew(SBox).WidthOverride_Lambda([this] { return 215.f * BindingScale.Get(1.f); })
+                        .HeightOverride_Lambda([this] { return 36.f * BindingScale.Get(1.f); })
                         [
-                            SAssignNew(RowButtons.AddDefaulted_GetRef(), SButton).HAlign(HAlign_Center).VAlign(VAlign_Center)
+                            SAssignNew(RowButtons.AddDefaulted_GetRef(), SChronosMenuButton).HAlign(HAlign_Center).VAlign(VAlign_Center)
                             .ButtonStyle(&ChronosMenuArt::ButtonStyle())
                             .IsEnabled_Lambda([this] { return Pending == EState::Idle; })
                             .OnClicked(this, &SChronosControlList::BeginCapture, Index)
                             [
-                                SNew(STextBlock).Font(KeyFont).ColorAndOpacity(Ivory)
+                                SNew(STextBlock).Font_Lambda([this] { return ScaledFont(KeyFont); }).ColorAndOpacity(Ivory)
                                 .Text_Lambda([this, Index] {
                                     return Selected == Index && Pending == EState::Capture
                                         ? LOCTEXT("WaitingKey", "Esperando...") : DisplayKey(CurrentKey(Index));
@@ -280,12 +339,21 @@ namespace
             SCompoundWidget::OnFocusLost(Event);
         }
 
+        TSharedPtr<SWidget> FirstBinding() const { return RowButtons.IsEmpty() ? nullptr : RowButtons[0]; }
+
     private:
         enum class EState { Idle, Capture, Conflict, Reset };
         TWeakObjectPtr<APlayerController> Player;
         TArray<FControlRow> Rows;
         FSlateFontInfo Font;
         FSlateFontInfo FooterFont;
+        TAttribute<float> MenuScale;
+        TAttribute<float> BindingScale;
+        FSlateFontInfo ScaledFont(FSlateFontInfo Base) const
+        {
+            Base.Size = FMath::RoundToInt(Base.Size * BindingScale.Get(1.f));
+            return Base;
+        }
         FSlateFontInfo KeyFont;
         FText Status;
         EState Pending = EState::Idle;
@@ -297,7 +365,7 @@ namespace
 
         bool NeedsConfirmation() const { return Pending == EState::Conflict || Pending == EState::Reset; }
 
-        TArray<TSharedPtr<SButton>> RowButtons;
+        TArray<TSharedPtr<SChronosMenuButton>> RowButtons;
         const FButtonStyle ResetStyle = FooterStyle(TEXT("Restablecer_Controles"));
         const FButtonStyle& ConfirmStyle = ChronosMenuArt::ConfirmStyle();
         const FButtonStyle CancelStyle = FooterStyle(TEXT("Cancelar"));
@@ -308,9 +376,9 @@ namespace
         TSharedRef<SWidget> MakeFooter(const FButtonStyle* Style, const FText& Label,
             FReply (SChronosControlList::*Action)())
         {
-            return SNew(SBox).HeightOverride(49)
+            return SNew(SBox).HeightOverride_Lambda([this] { return 49.f * MenuScale.Get(1.f); })
             [
-                SNew(SButton).ButtonStyle(Style).ToolTipText(Label).OnClicked(this, Action)
+                SNew(SChronosMenuButton).ButtonStyle(Style).ToolTipText(Label).OnClicked(this, Action)
                 .IsEnabled_Lambda([this, Action] {
                     if (Action == &SChronosControlList::Cancel) return Pending != EState::Idle || HasChanges();
                     if (Action == &SChronosControlList::ConfirmLocal) return NeedsConfirmation();
@@ -330,7 +398,7 @@ namespace
         {
             Selected = Index;
             Pending = EState::Capture;
-            RowButtons[Index]->SetButtonStyle(&ChronosMenuArt::ButtonStyle(true));
+            RowButtons[Index]->SetMenuStyle(ChronosMenuArt::ButtonStyle(true));
             CaptureUntil = FPlatformTime::Seconds() + CaptureSeconds;
             Status = FText::Format(LOCTEXT("Waiting", "{0} · Presiona una tecla o haz clic en el espacio libre del panel. Esc para cancelar."), Rows[Index].Label);
             if (!Timer.IsValid())
@@ -364,7 +432,7 @@ namespace
             Candidate = Key;
             for (int32 Index = 0; Index < Rows.Num(); ++Index)
             {
-                if (Index == Selected || CurrentKey(Index) != Key) continue;
+                if (Index == Selected || CurrentKey(Index) != Key || ChronosControls::CanShare(Rows[Index].Name, Rows[Selected].Name)) continue;
                 Pending = EState::Conflict;
                 Conflicting = Index;
                 Status = FText::Format(LOCTEXT("Conflict", "{0} ya se usa para {1}. Puedes intercambiar las dos teclas o cancelar."),
@@ -403,16 +471,18 @@ namespace
             if (Pending == EState::Reset) return ConfirmLocal();
             auto* Settings = ChronosControls::Settings(Player.Get());
             const auto* Profile = Settings ? Settings->GetActiveKeyProfile() : nullptr;
-            TSet<FKey> Used;
+            TMultiMap<FKey, FName> Used;
             TArray<TPair<FMapPlayerKeyArgs, FKey>> Changes;
             for (const auto& Row : Rows)
             {
-                if (Used.Contains(Row.PendingKey))
+                TArray<FName> SameKey;
+                Used.MultiFind(Row.PendingKey, SameKey);
+                if (SameKey.ContainsByPredicate([&](FName Name) { return !ChronosControls::CanShare(Name, Row.Name); }))
                 {
                     Finish(LOCTEXT("Duplicate", "Hay teclas duplicadas. Corrige las asignaciones antes de guardar."));
                     return FReply::Handled();
                 }
-                Used.Add(Row.PendingKey);
+                Used.Add(Row.PendingKey, Row.Name);
                 if (Row.PendingKey == Row.SavedKey) continue;
                 FMapPlayerKeyArgs Change;
                 Change.MappingName = Row.Name;
@@ -469,7 +539,7 @@ namespace
         {
             Status = MoveTemp(Message);
             Pending = EState::Idle;
-            if (RowButtons.IsValidIndex(Selected)) RowButtons[Selected]->SetButtonStyle(&ChronosMenuArt::ButtonStyle());
+            if (RowButtons.IsValidIndex(Selected)) RowButtons[Selected]->SetMenuStyle(ChronosMenuArt::ButtonStyle());
             Selected = Conflicting = INDEX_NONE;
             Candidate = FKey();
         }
@@ -526,31 +596,39 @@ namespace
             SLATE_ARGUMENT(TWeakObjectPtr<UChronosGamepad>, Input)
             SLATE_ARGUMENT(FSlateFontInfo, Font)
             SLATE_ARGUMENT(int32, Tab)
+            SLATE_ATTRIBUTE(float, MenuScale)
+            SLATE_ATTRIBUTE(float, BindingScale)
         SLATE_END_ARGS()
 
         void Construct(const FArguments& Args)
         {
             Input = Args._Input;
             Font = Args._Font;
-            Font.Size = 16;
+            Font.Size = 19;
+            MenuScale = Args._MenuScale;
+            BindingScale = Args._BindingScale;
             Tab = Args._Tab;
             bAlternate = Tab == 3;
             Load();
-            auto List = SNew(SScrollBox).AllowOverscroll(EAllowOverscroll::No).ScrollWhenFocusChanges(EScrollWhenFocusChanges::InstantScroll);
+            auto List = SNew(SScrollBox).AllowOverscroll(EAllowOverscroll::No)
+                .ScrollBarStyle(&ControlsScrollBar()).ScrollBarThickness(FVector2D(10, 10))
+                .ScrollWhenFocusChanges(EScrollWhenFocusChanges::InstantScroll).NavigationScrollPadding(10);
             List->AddSlot()[Row(LOCTEXT("PadMove", "Movimiento"), BindingVisual(EKeys::Gamepad_Left2D, LOCTEXT("LeftStick", "Stick izquierdo")))];
             List->AddSlot()[Row(LOCTEXT("PadLook", "Cámara"), BindingVisual(EKeys::Gamepad_Right2D, LOCTEXT("RightStick", "Stick derecho")))];
-            for (const auto& Binding : UChronosGamepad::Defaults(bAlternate))
+            TArray<FChronosPadBinding> Bindings = UChronosGamepad::Defaults(bAlternate);
+            Bindings.StableSort([](const auto& A, const auto& B)
+                { return DisplayPriority(A.Name) < DisplayPriority(B.Name); });
+            for (const auto& Binding : Bindings)
             {
                 const FName Name = Binding.Name;
+                auto BindingButton = SNew(SChronosMenuButton).ButtonStyle(&ChronosMenuArt::ButtonStyle())
+                    .OnClicked(this, &SChronosPadSettings::Begin, Name)
+                    .HAlign(HAlign_Center).VAlign(VAlign_Center)
+                    .ToolTipText_Lambda([this, Name] { return UChronosGamepad::KeyLabel(Pending.FindRef(Name), UsePlayStationArt()); })
+                    [BindingVisual(Name)];
+                if (!FirstBindingButton) FirstBindingButton = BindingButton;
                 List->AddSlot()[Row(Binding.Label,
-                    SNew(SBox).MinDesiredHeight(33)
-                    [
-                        SNew(SButton).ButtonStyle(&ChronosMenuArt::ButtonStyle())
-                        .OnClicked(this, &SChronosPadSettings::Begin, Name)
-                        .HAlign(HAlign_Center).VAlign(VAlign_Center)
-                        .ToolTipText_Lambda([this, Name] { return UChronosGamepad::KeyLabel(Pending.FindRef(Name), UsePlayStationArt()); })
-                        [BindingVisual(Name)]
-                    ])];
+                    SNew(SBox).MinDesiredHeight_Lambda([this] { return 47.f * BindingScale.Get(1.f); })[BindingButton])];
             }
             ChildSlot
             [
@@ -587,6 +665,7 @@ namespace
         }
 
         bool IsCapturing() const { return !Capture.IsNone(); }
+        TSharedPtr<SWidget> FirstBinding() const { return FirstBindingButton; }
 
         FReply OnPreviewKeyDown(const FGeometry& Geometry, const FKeyEvent& Event) override
         {
@@ -595,10 +674,13 @@ namespace
             if (Key == EKeys::Escape) return Cancel();
             if (!Event.IsRepeat() && UChronosGamepad::CanRebind(Key))
             {
-                const auto* Existing = Pending.FindKey(Key);
-                if (Existing && *Existing != Capture)
+                FName Existing;
+                for (const auto& Entry : Pending)
+                    if (Entry.Value == Key && Entry.Key != Capture && !ChronosControls::CanShare(Entry.Key, Capture))
+                    { Existing = Entry.Key; break; }
+                if (!Existing.IsNone())
                 {
-                    Conflict = *Existing;
+                    Conflict = Existing;
                     ToSwap = Capture;
                     Candidate = Key;
                     Status = LOCTEXT("PadConflict", "Ya se usa ese botón. Intercambia las dos asignaciones o cancela.");
@@ -617,13 +699,14 @@ namespace
     private:
         TSharedRef<SWidget> Caption(TAttribute<FText> Text) const
         {
-            return SNew(STextBlock).Font(Font).ColorAndOpacity(Ivory).Text(MoveTemp(Text));
+            return SNew(STextBlock).Font_Lambda([this] { return ChronosMenuArt::ScaleFont(Font, MenuScale.Get(1.f)); })
+                .ColorAndOpacity(Ivory).Text(MoveTemp(Text));
         }
 
         TSharedRef<SWidget> Button(TAttribute<FText> Text, FOnClicked Click) const
         {
-            return SNew(SBox).MinDesiredHeight(33)
-                [SNew(SButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).OnClicked(MoveTemp(Click))
+            return SNew(SBox).MinDesiredHeight_Lambda([this] { return 33.f * MenuScale.Get(1.f); })
+                [SNew(SChronosMenuButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).OnClicked(MoveTemp(Click))
                     .HAlign(HAlign_Center).VAlign(VAlign_Center)[Caption(MoveTemp(Text))]];
         }
 
@@ -650,7 +733,8 @@ namespace
                 + SWidgetSwitcher::Slot()[Caption(MoveTemp(Label))]
                 + SWidgetSwitcher::Slot()
                 [
-                    SNew(SBox).WidthOverride(74).HeightOverride(29)
+                    SNew(SBox).WidthOverride_Lambda([this] { return 132.f * BindingScale.Get(1.f); })
+                        .HeightOverride_Lambda([this] { return 42.f * BindingScale.Get(1.f); })
                     [
                         SNew(SScaleBox).Stretch(EStretch::ScaleToFit)
                         [SNew(SImage).Image_Lambda([this, Key] { return PadGlyph(Key.Get(), UsePlayStationArt()); })]
@@ -662,9 +746,14 @@ namespace
         {
             return SNew(SHorizontalBox)
                 + SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center).Padding(0, 1)
-                [SNew(STextBlock).Font(Font).ColorAndOpacity(Gold).Text(Text)]
-                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 1, 12, 1)
-                [SNew(SBox).WidthOverride(200).HAlign(HAlign_Fill)[Control]];
+                [SNew(STextBlock).Font_Lambda([this]
+                {
+                    auto Scaled = Font;
+                    Scaled.Size = FMath::RoundToInt(Scaled.Size * BindingScale.Get(1.f));
+                    return Scaled;
+                }).ColorAndOpacity(Gold).Text(Text)]
+                + SHorizontalBox::Slot().FillWidth(.60f).VAlign(VAlign_Center).HAlign(HAlign_Left).Padding(10, 2, 22, 2)
+                [SNew(SBox).WidthOverride_Lambda([this] { return 200.f * BindingScale.Get(1.f); })[Control]];
         }
 
         void Load()
@@ -735,6 +824,9 @@ namespace
         }
 
         TWeakObjectPtr<UChronosGamepad> Input;
+        TSharedPtr<SWidget> FirstBindingButton;
+        TAttribute<float> MenuScale;
+        TAttribute<float> BindingScale;
         TMap<FName, FKey> Pending;
         FSlateFontInfo Font;
         FText Status;
@@ -758,6 +850,8 @@ namespace
         void Construct(const FArguments& Args)
         {
             Player = Args._Player;
+            Settings = UChronosMenuSettings::Get(Player.Get());
+            Zoom = Settings.IsValid() ? Settings->BindingZoom() : 100;
             Font = Args._Font;
             Font.Size = 15;
             auto Navigation = SNew(SHorizontalBox);
@@ -766,22 +860,50 @@ namespace
             for (int32 Index = 0; Index < UE_ARRAY_COUNT(Labels); ++Index)
             {
                 Navigation->AddSlot().FillWidth(1).Padding(0, 0, 7, 0)
-                    [SNew(SBox).MinDesiredHeight(40)
-                        [SAssignNew(Tabs[Index], SButton).HAlign(HAlign_Center).VAlign(VAlign_Center)
+                    [SNew(SBox).MinDesiredHeight_Lambda([this] { return 40.f * MenuScale(); })
+                        [SAssignNew(Tabs[Index], SChronosMenuButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).HAlign(HAlign_Center).VAlign(VAlign_Center)
                             .OnClicked(this, &SChronosControlTabs::Switch, Index)
-                            [SNew(STextBlock).Text(Labels[Index]).Font(Font).ColorAndOpacity(Ivory)]]];
+                            [SNew(STextBlock).Text(Labels[Index]).Font_Lambda([this] { return ChronosMenuArt::ScaleFont(Font, MenuScale()); }).ColorAndOpacity(Ivory)]]];
             }
             ChildSlot
             [
                 SNew(SVerticalBox)
+                + SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
+                [
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot().FillWidth(1)
+                    [
+                        SNew(STextBlock).Font(Font).ColorAndOpacity(Gold).Text(LOCTEXT("ControlsHeading", "Controles"))
+                    ]
+                    + SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
+                    [
+                        ZoomButton(LOCTEXT("ZoomOut", "−"), LOCTEXT("ZoomOutLabel", "Reducir escala de controles"), -15)
+                    ]
+                    + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
+                    [
+                        SNew(STextBlock).Font(Font).ColorAndOpacity(Ivory)
+                        .Text_Lambda([this] { return FText::AsPercent(Zoom / 100.); })
+                    ]
+                    + SHorizontalBox::Slot().AutoWidth()
+                    [
+                        ZoomButton(LOCTEXT("ZoomIn", "+"), LOCTEXT("ZoomInLabel", "Ampliar escala de controles"), 15)
+                    ]
+                ]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 12)[Navigation]
                 + SVerticalBox::Slot().FillHeight(1)
                 [
                     SAssignNew(Panel, SBox)
-                    [SNew(SChronosControlList).Player(Player).RowFont(Args._Font)]
+                    [SAssignNew(Keyboard, SChronosControlList).Player(Player).RowFont(Args._Font).MenuScale(this, &SChronosControlTabs::MenuScale).BindingScale(this, &SChronosControlTabs::Scale)]
                 ]
             ];
             UpdateTabs();
+        }
+
+        bool SupportsKeyboardFocus() const override { return true; }
+
+        FReply OnFocusReceived(const FGeometry&, const FFocusEvent&) override
+        {
+            return FReply::Handled().SetUserFocus(Tabs[Active].ToSharedRef());
         }
 
         FReply OnPreviewKeyDown(const FGeometry& Geometry, const FKeyEvent& Event) override
@@ -798,6 +920,29 @@ namespace
         }
 
     private:
+        TSharedRef<SWidget> ZoomButton(FText Symbol, FText Tooltip, int32 Delta)
+        {
+            auto SymbolFont = Font;
+            SymbolFont.Size = 21;
+            return SNew(SBox).WidthOverride(50).HeightOverride_Lambda([this] { return 37.f * MenuScale(); })
+            [
+                SNew(SChronosMenuButton).ButtonStyle(&ChronosMenuArt::ButtonStyle())
+                .HAlign(HAlign_Center).VAlign(VAlign_Center).ToolTipText(Tooltip)
+                .OnClicked(this, &SChronosControlTabs::AdjustZoom, Delta)
+                [SNew(STextBlock).Text(Symbol).Font(SymbolFont).ColorAndOpacity(Ivory)]
+            ];
+        }
+
+        FReply AdjustZoom(int32 Delta)
+        {
+            const int32 Next = FMath::Clamp(Zoom + Delta, 75, 150);
+            if (Next != Zoom && (!Settings.IsValid() || Settings->SetBindingZoom(Next))) Zoom = Next;
+            return FReply::Handled();
+        }
+
+        float MenuScale() const { return Settings.IsValid() ? Settings->MenuScale() : 1.f; }
+        float Scale() const { return Zoom / 100.f * MenuScale(); }
+
         FReply Switch(int32 Index)
         {
             if (Active == Index) return FReply::Handled();
@@ -805,23 +950,39 @@ namespace
             if (Active == 0)
             {
                 Pad.Reset();
-                Panel->SetContent(SNew(SChronosControlList).Player(Player).RowFont(Font));
+                Panel->SetContent(SAssignNew(Keyboard, SChronosControlList).Player(Player).RowFont(Font).MenuScale(this, &SChronosControlTabs::MenuScale).BindingScale(this, &SChronosControlTabs::Scale));
             }
-            else Panel->SetContent(SAssignNew(Pad, SChronosPadSettings).Input(UChronosGamepad::Get(Player.Get())).Font(Font).Tab(Index));
+            else
+            {
+                Keyboard.Reset();
+                Panel->SetContent(SAssignNew(Pad, SChronosPadSettings).Input(UChronosGamepad::Get(Player.Get())).Font(Font)
+                    .Tab(Index).MenuScale(this, &SChronosControlTabs::MenuScale).BindingScale(this, &SChronosControlTabs::Scale));
+            }
             UpdateTabs();
             return FReply::Handled();
         }
 
         void UpdateTabs()
         {
-            for (int32 Index = 0; Index < 4; ++Index) Tabs[Index]->SetButtonStyle(&ChronosMenuArt::ButtonStyle(Index == Active));
+            const auto First = Pad ? Pad->FirstBinding() : Keyboard->FirstBinding();
+            for (int32 Index = 0; Index < 4; ++Index)
+            {
+                Tabs[Index]->SetMenuStyle(ChronosMenuArt::ButtonStyle(Index == Active));
+                const auto Navigation = Tabs[Index]->FindOrAddMetaData<FNavigationMetaData>();
+                if (First) Navigation->SetNavigationExplicit(EUINavigation::Down, First);
+                else Navigation->SetNavigationEscape(EUINavigation::Down);
+            }
+            if (First) First->FindOrAddMetaData<FNavigationMetaData>()->SetNavigationExplicit(EUINavigation::Up, Tabs[Active]);
         }
 
         TWeakObjectPtr<APlayerController> Player;
-        TSharedPtr<SButton> Tabs[4];
+        TSharedPtr<SChronosMenuButton> Tabs[4];
         TSharedPtr<SBox> Panel;
         TSharedPtr<SChronosPadSettings> Pad;
+        TSharedPtr<SChronosControlList> Keyboard;
         FSlateFontInfo Font;
+        TWeakObjectPtr<UChronosMenuSettings> Settings;
+        int32 Zoom = 100;
         int32 Active = 0;
     };
 }
@@ -832,23 +993,23 @@ void UChronosControls::NativeConstruct()
     auto* Panel = Cast<UCanvasPanel>(GetWidgetFromName(TEXT("panelControles")));
     auto* Columns = GetWidgetFromName(TEXT("columnas"));
     const auto* Labels = Cast<UTextBlock>(GetWidgetFromName(TEXT("acciones")));
-    if (!Panel || !Columns || !Labels || ControlList) return;
+    if (!Panel || !Columns || !Labels || SelectorHost) return;
 
     // Reuse the original canvas, frame, navigation and label font.
     const auto List = SNew(SChronosControlTabs).Player(GetOwningPlayer()).Font(Labels->GetFont());
-    ControlList = WidgetTree->ConstructWidget<UNativeWidgetHost>();
-    CastChecked<UNativeWidgetHost>(ControlList)->SetContent(List);
-    UCanvasPanelSlot* ListSlot = Panel->AddChildToCanvas(ControlList);
+    auto* Host = WidgetTree->ConstructWidget<UNativeWidgetHost>();
+    Host->SetContent(List);
+    SelectorHost = Host;
+    UCanvasPanelSlot* ListSlot = Panel->AddChildToCanvas(Host);
     ListSlot->SetAnchors(FAnchors(0, 0, 1, 1));
-    ListSlot->SetOffsets(FMargin(26, 22, 26, 22));
+    ListSlot->SetOffsets(FMargin(0));
+    if (auto* PanelSlot = Cast<UCanvasPanelSlot>(Panel->Slot)) ChronosMenuArt::PlaceOptionsPanel(*PanelSlot, true);
     Columns->SetVisibility(ESlateVisibility::Collapsed);
 }
 
-void UChronosControls::NativeDestruct()
+const FSlateBrush* ChronosControls::Glyph(FKey Key, bool bPlayStation)
 {
-    if (ControlList) ControlList->RemoveFromParent();
-    ControlList = nullptr;
-    Super::NativeDestruct();
+    return PadGlyph(Key, bPlayStation);
 }
 
 #undef LOCTEXT_NAMESPACE

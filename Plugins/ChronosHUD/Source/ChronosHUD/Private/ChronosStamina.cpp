@@ -1,4 +1,6 @@
 #include "ChronosStamina.h"
+#include "ChronosFridge.h"
+#include "Camera/PlayerCameraManager.h"
 
 #include "EnhancedPlayerInput.h"
 #include "Engine/World.h"
@@ -77,6 +79,21 @@ namespace
 bool UChronosStamina::HasStamina(const ACharacter* John)
 {
     return NumberProperty(John, TEXT("CurrentStamina")) != nullptr;
+}
+
+void UChronosStamina::RestoreStamina(ACharacter* John)
+{
+    if (!HasStamina(John)) return;
+    SetNumber(John, TEXT("CurrentStamina"), Maximum(John));
+    SetFlag(John, TEXT("bStaminaExhausted"), false);
+}
+
+double UChronosStamina::ApplyConsumableSpeed(ACharacter* John, double BaseFactor)
+{
+    const auto* PC = IsValid(John) ? Cast<APlayerController>(John->GetController()) : nullptr;
+    const auto* Effect = PC && PC->PlayerCameraManager
+        ? Cast<UChronosBeerCamera>(PC->PlayerCameraManager->FindCameraModifierByClass(UChronosBeerCamera::StaticClass())) : nullptr;
+    return BaseFactor * (Effect ? Effect->SpeedMultiplier() : 1.f);
 }
 
 double UChronosStamina::GetStaminaPercent(const ACharacter* John)

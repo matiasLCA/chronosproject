@@ -1,6 +1,8 @@
 #include "ChronosPlayerSave.h"
 #include "ChronosJournal.h"
 #include "ChronosSaveThumbnail.h"
+#include "ChronosUrns.h"
+#include "ChronosGuardadoLibrary.h"
 
 #include "Blueprint/UserWidget.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -160,10 +162,8 @@ FString ChronosPlayerSave::SlotName(int32 Number)
 UChronosPlayerSave* ChronosPlayerSave::Read(int32 Number)
 {
     if (Number <= 0) return nullptr;
-    TArray<uint8> Data;
-    if (!UGameplayStatics::LoadDataFromSlot(Data, SlotName(Number), User) || Data.Num() < 32
-        || FMemory::Memcmp(Data.GetData(), "GVAS", 4) != 0) return nullptr;
-    return Cast<UChronosPlayerSave>(UGameplayStatics::LoadGameFromMemory(Data));
+    auto* Class = LoadClass<UChronosPlayerSave>(nullptr, TEXT("/Game/Guardado/SG_Partida.SG_Partida_C"));
+    return Class ? Cast<UChronosPlayerSave>(UChronosGuardadoLibrary::CargarPartidaSegura(SlotName(Number), Class, User)) : nullptr;
 }
 
 FString ChronosPlayerSave::Map(const UChronosPlayerSave& Save)
@@ -270,6 +270,12 @@ bool UChronosSaveHooks::WritePlayerSave(const UObject* WorldContextObject, USave
             Save->bLampInHand = InHand->GetPropertyValue_InContainer(Lamp);
         }
     UChronosJournal::Snapshot(World, Save->JournalData);
+    UChronosUrns::Capture(World);
+    if (const auto* Progress = UChronosProgressState::Get(World))
+    {
+        Save->Gameplay = Progress->Data;
+        Save->bHasGameplayProgress = true;
+    }
     CaptureTasks(*World, *Save);
     if (const AActor* Clock = CemeteryClock(*World))
     {
@@ -280,7 +286,7 @@ bool UChronosSaveHooks::WritePlayerSave(const UObject* WorldContextObject, USave
     }
     if (!ChronosSaveThumbnail::Capture(*Player, Save->PreviewPng)) return false;
     TArray<uint8> Bytes;
-    return UGameplayStatics::SaveGameToMemory(Save, Bytes) && WriteSaveBytes(SlotName, Bytes, UserIndex);
+    return UChronosGuardadoLibrary::PrepararPartidaFirmada(Save, Bytes) && WriteSaveBytes(SlotName, Bytes, UserIndex);
 }
 
 // YukoDev — SISTEMA DE CARGA
@@ -294,6 +300,12 @@ void UChronosSaveHooks::TravelToPlayerSave(const UObject* WorldContextObject, US
         if (auto* Pending = FindFProperty<FObjectPropertyBase>(Instance->GetClass(), TEXT("partidaPendiente")))
             Pending->SetObjectPropertyValue_InContainer(Instance, nullptr);
         return;
+    }
+
+    if (auto* Progress = UChronosProgressState::Get(Instance))
+    {
+        Progress->Data = Save->bHasGameplayProgress ? Save->Gameplay : FChronosProgress();
+        Progress->bRestoredFromSave=Save->bHasGameplayProgress;
     }
 
     if (IsValid(ObjectField(Instance, TEXT("reproductorMenu"))))
@@ -344,6 +356,13 @@ bool UChronosSaveHooks::RestoreDailyTasks(AActor* Manager)
     auto* Save = Cast<UChronosPlayerSave>(ObjectField(World->GetGameInstance(), TEXT("partidaPendiente")));
     if (!Save) Save = ChronosPlayerSave::LoadedFrom(Manager);
     if (!Save || !Save->bHasDailyTasks || Save->bAppliedDailyTasks) return false;
+    if(const auto* OriginalWorld=FindFProperty<FBoolProperty>(Save->GetClass(),TEXT("MundoGuardado"));
+        OriginalWorld && OriginalWorld->GetPropertyValue_InContainer(Save) && Manager->FindFunction(TEXT("restaurarDesdePartida")))
+    {
+        // The authentic world restore owns the complete task data; do not create a second set first.
+        Save->bAppliedDailyTasks=true;
+        return true;
+    }
 
     const auto* Item = CastFieldChecked<FObjectPropertyBase>(Array->Inner);
     FScriptArrayHelper Tasks(Array, Array->ContainerPtrToValuePtr<void>(Manager));

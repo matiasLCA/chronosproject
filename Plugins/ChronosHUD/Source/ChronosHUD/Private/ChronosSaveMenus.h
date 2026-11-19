@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Blueprint/UserWidget.h"
-#include "Styling/SlateTypes.h"
+#include "ChronosMenuFocus.h"
 #include "ChronosSaveMenus.generated.h"
 
 class UChronosPauseMenu;
@@ -14,6 +14,11 @@ class CHRONOSHUD_API UChronosMainMenu : public UUserWidget
 protected:
     void NativeConstruct() override;
     void NativeDestruct() override;
+    void NativeTick(const FGeometry& Geometry, float DeltaSeconds) override;
+
+private:
+    TArray<TWeakObjectPtr<UButton>> MenuButtons;
+    FChronosWidgetFocus MenuFocus;
 };
 
 UCLASS()
@@ -52,6 +57,7 @@ class CHRONOSHUD_API UChronosPauseMenu : public UUserWidget
     GENERATED_BODY()
 
 public:
+    static bool IsOpen(const UObject* Context);
     void FocusBrowserEntry(bool bSaving);
     void FocusOptionsEntry();
 

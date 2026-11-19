@@ -1,9 +1,17 @@
 #include "ChronosHUDLayer.h"
+#include "ChronosLetter.h"
 #include "ChronosJournal.h"
 #include "ChronosStamina.h"
 #include "ChronosTutorial.h"
 #include "ChronosGamepad.h"
 #include "ChronosControls.h"
+#include "ChronosContext.h"
+#include "ChronosConversation.h"
+#include "ChronosUrns.h"
+#include "ChronosInventory.h"
+#include "ChronosFridge.h"
+#include "EnhancedInputComponent.h"
+#include "InputAction.h"
 #include "GameFramework/Character.h"
 
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -36,7 +44,6 @@ namespace
     constexpr float TaskSamplePeriod = .85f;
     // Shared approaches in front of both doors, beyond the divider between the paths.
     const FVector WestRestroom(27220, -18100, 22160);
-    const FVector EastRestroom(53854, -25778, 22160);
 
     UObject* ReadObject(const UObject* Source, FName Name)
     {
@@ -155,13 +162,18 @@ bool UChronosHUDSubsystem::Attach(APlayerController* PC, APawn* Pawn)
 
     HUD->SetVisibility(ESlateVisibility::HitTestInvisible);
     HUD->InitializeArt();
+    Context = CreateWidget<UChronosContext>(PC, UChronosContext::StaticClass());
+    if (Context)
+    {
+        Context->SetVisibility(ESlateVisibility::HitTestInvisible);
+        Context->AddToViewport(35);
+    }
     if (auto* Settings = UChronosMenuSettings::Get(PC)) Settings->AttachHUD(HUD);
     HUD->Mode = DefaultMode;
     HUD->Places = {
         {TEXT("Casa"), TEXT("Home"), FVector(88601, -26068, 22376)},
         {TEXT("Morgue y crematorio"), TEXT("Crematorium"), FVector(66365, -27490, 22170)},
         {TEXT("Iglesia"), TEXT("Church"), FVector(49330, -18350, 22205)},
-        {TEXT("Baños"), TEXT("Restroom"), EastRestroom},
         {TEXT("Baños"), TEXT("Restroom"), WestRestroom},
         {TEXT("Nichos"), TEXT("Graves"), FVector(36300, -26300, 22200)},
         {TEXT("Zona de juegos"), TEXT("Playground"), FVector(42850, -16050, 22165)},
@@ -397,12 +409,46 @@ void UChronosHUDSubsystem::SetMapInput(APlayerController* PC, bool bEnabled)
     }
 }
 
+void UChronosHUDSubsystem::BindInventoryInput(APlayerController* PC)
+{
+    if (InventoryInput && InventoryPlayer.Get() == PC) return;
+    auto* Action = LoadObject<UInputAction>(nullptr, TEXT("/Game/Characters/input/interaction/IA_Inventory.IA_Inventory"), nullptr, LOAD_NoWarn);
+    if (!Action) return;
+    if (InventoryPlayer.IsValid() && InventoryInput) InventoryPlayer->PopInputComponent(InventoryInput);
+    if (InventoryInput) InventoryInput->DestroyComponent();
+    InventoryInput = NewObject<UEnhancedInputComponent>(PC);
+    InventoryInput->RegisterComponent();
+    InventoryInput->BindAction(Action, ETriggerEvent::Started, this, &UChronosHUDSubsystem::ToggleInventory);
+    InventoryPlayer = PC;
+    PC->PushInputComponent(InventoryInput);
+}
+
+void UChronosHUDSubsystem::ToggleInventory()
+{
+    if (Inventory && Inventory->IsInViewport()) { Inventory->Close(); return; }
+    auto* PC = GetWorld()->GetFirstPlayerController();
+    auto* Pawn = PC ? PC->GetPawn().Get() : nullptr;
+    if (!UChronosInteraction::CanPresentThought(Pawn) || (HUD && HUD->bMapOpen) || (Journal && Journal->IsVisible())) return;
+    const auto* Session = GetWorld()->GetSubsystem<UChronosFridgeSession>();
+    if (Session && Session->GetHeld() && Session->GetHeld()->IsDrinking()) return;
+    Inventory = CreateWidget<UChronosInventory>(PC, UChronosInventory::StaticClass());
+    if (Inventory) Inventory->Open();
+}
+
+void UChronosHUDSubsystem::SetLetterReader(UChronosLetter* Reader)
+{
+    if (HUD) HUD->LetterReader = Reader;
+}
+
 void UChronosHUDSubsystem::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
     UWorld* World = GetWorld();
     if (World->IsPaused())
     {
+        if (Context) Context->Update(nullptr, true);
+        if (auto* PC = World->GetFirstPlayerController(); PC && PC->GetPawn())
+            HideOld(ReadObject(PC->GetPawn(), TEXT("widgetInteractuar")));
         if (!bGameplayHUDHiddenForPause)
         {
             bGameplayHUDHiddenForPause = true;
@@ -418,7 +464,13 @@ void UChronosHUDSubsystem::Tick(float DeltaTime)
                 }
             };
             Hide(UChronosTutorial::StaticClass());
-            Hide(LoadClass<UUserWidget>(nullptr, TEXT("/Game/UI/WBP_Objetivo.WBP_Objetivo_C")));
+            const TCHAR* GameplayWidgets[] = {
+                TEXT("/Game/UI/WBP_Objetivo.WBP_Objetivo_C"),
+                TEXT("/Game/NPC/Visitors/LivingCemetery/WBP_CemeteryClock.WBP_CemeteryClock_C"),
+                TEXT("/Game/NPC_System/Combat/UI/WBP_CombatHealthBar.WBP_CombatHealthBar_C"),
+                TEXT("/Game/Interactivo/Lantern/WBP_Bateria.WBP_Bateria_C"),
+            };
+            for (const TCHAR* Path : GameplayWidgets) Hide(LoadClass<UUserWidget>(nullptr, Path));
         }
         if (HUD && HUD->GetVisibility() != ESlateVisibility::Collapsed)
             HUD->SetVisibility(ESlateVisibility::Collapsed);
@@ -449,6 +501,12 @@ void UChronosHUDSubsystem::Tick(float DeltaTime)
         HUD = nullptr;
     }
     if (!HUD && !Attach(PC, Pawn)) return;
+    BindInventoryInput(PC);
+    if (!bUrnsRestored && World->GetTimeSeconds() > 3.f && !ReadBool(Pawn, TEXT("enDespertar")))
+    {
+        bUrnsRestored = true;
+        UChronosUrns::Restore(World);
+    }
     if (Player.Get() != Pawn)
     {
         Player = Pawn;
@@ -460,10 +518,16 @@ void UChronosHUDSubsystem::Tick(float DeltaTime)
     HUD->bNarrativeHidden = bHideMarkers || ReadBool(Pawn, TEXT("enDespertar")) || IsValid(ReadObject(Pawn, TEXT("camaraMuerte")));
     UObject* List = ReadObject(Pawn, TEXT("lista"));
     bool bLegacyListOpen = ReadBool(List, TEXT("abierta"));
-    const bool bExternalOverlay = ReadBool(Pawn, TEXT("enPausa")) || PC->IsPaused();
+    const bool bExternalOverlay = ReadBool(Pawn, TEXT("enPausa")) || PC->IsPaused()
+        || UChronosConversation::IsActive(this) || UChronosInventory::IsOpen(this);
+    const auto* Letter = HUD->LetterReader.Get();
+    if (Context) Context->Update(Pawn, bExternalOverlay || (Letter && Letter->IsInViewport())
+        || HUD->bMapOpen || (Journal && Journal->IsVisible()));
+    HideOld(ReadObject(Pawn, TEXT("widgetInteractuar")));
     const FKey ConfiguredMap = ChronosControls::Key(PC, TEXT("Chronos.Map"), FKey());
     const FKey ConfiguredJournal = ChronosControls::Key(PC, TEXT("Chronos.Journal"), FKey());
     const FKey ConfiguredMode = ChronosControls::Key(PC, TEXT("Chronos.HUDMode"), FKey());
+    const FKey ConfiguredInventory = ChronosControls::Key(PC, TEXT("Chronos.Inventory"), EKeys::I);
     const FKey ActiveMapKey = ConfiguredMap.IsValid() ? ConfiguredMap : MapKey;
     const FKey ActiveJournalKey = ConfiguredJournal.IsValid() ? ConfiguredJournal : JournalKey;
     const FKey ActiveModeKey = ConfiguredMode.IsValid() ? ConfiguredMode : HUDModeKey;
@@ -476,6 +540,7 @@ void UChronosHUDSubsystem::Tick(float DeltaTime)
     const FKey PadMap = PadKey(TEXT("Chronos.Map"));
     const FKey PadJournal = PadKey(TEXT("Chronos.Journal"));
     const FKey PadMode = PadKey(TEXT("Chronos.HUDMode"));
+    const FKey PadInventory = PadKey(TEXT("Chronos.Inventory"));
     const auto Pressed = [PC](FKey Keyboard, FKey Controller)
     {
         return (Keyboard.IsValid() && PC->WasInputKeyJustPressed(Keyboard))
@@ -499,6 +564,11 @@ void UChronosHUDSubsystem::Tick(float DeltaTime)
         HUD->MapKeyText = Prompt(ConfiguredMap.IsValid() || KeyAvailable(PC, MapKey), ActiveMapKey, PadMap);
         HUD->JournalKeyText = Prompt(ConfiguredJournal.IsValid() || KeyAvailable(PC, JournalKey), ActiveJournalKey, PadJournal);
         HUD->ModeKeyText = Prompt(ConfiguredMode.IsValid() || KeyAvailable(PC, HUDModeKey), ActiveModeKey, PadMode);
+        HUD->InventoryKeyText = Prompt(ConfiguredInventory.IsValid(), ConfiguredInventory, PadInventory);
+        HUD->MapHintKey = bPad ? PadMap : ActiveMapKey;
+        HUD->JournalHintKey = bPad ? PadJournal : ActiveJournalKey;
+        HUD->ModeHintKey = bPad ? PadMode : ActiveModeKey;
+        HUD->InventoryHintKey = bPad ? PadInventory : ConfiguredInventory;
     }
     if (!HUD->bAtlasReady && Now >= AtlasAt) CaptureAtlas();
     if (Journal && Journal->ConsumeCloseRequest())
@@ -555,6 +625,8 @@ void UChronosHUDSubsystem::Tick(float DeltaTime)
         && (bShowGauges || bBatteryActive || Now < BatteryUntil) ? 1.f : 0.f, DeltaTime);
     const ACharacter* John = Cast<ACharacter>(Pawn);
     HUD->Stamina = UChronosStamina::HasStamina(John) ? UChronosStamina::GetStaminaPercent(John) * .01 : -1.f;
+    if (HUD->ShownStamina < 0 || HUD->Stamina <= HUD->ShownStamina) HUD->ShownStamina = HUD->Stamina;
+    else HUD->ShownStamina = FMath::FInterpConstantTo(HUD->ShownStamina, HUD->Stamina, DeltaTime, 1.7f);
     FadeToward(HUD->StaminaOpacity, !HUD->bNarrativeHidden && HUD->Stamina >= 0.f
         && (bShowGauges || HUD->Stamina < .999f) ? 1.f : 0.f, DeltaTime);
     HUD->ShownHealth = FMath::FInterpTo(HUD->ShownHealth, FMath::Max(0.f, HUD->Health), DeltaTime, 9.f);
@@ -602,6 +674,11 @@ void UChronosHUDSubsystem::Tick(float DeltaTime)
 
 void UChronosHUDSubsystem::Deinitialize()
 {
+    if (Inventory) Inventory->Close();
+    Inventory = nullptr;
+    if (InventoryPlayer.IsValid() && InventoryInput) InventoryPlayer->PopInputComponent(InventoryInput);
+    if (InventoryInput) InventoryInput->DestroyComponent();
+    InventoryInput = nullptr;
     if (PoemSpawnHandle.IsValid()) GetWorld()->RemoveOnActorSpawnedHandler(PoemSpawnHandle);
     if (HUD)
     {
@@ -613,6 +690,8 @@ void UChronosHUDSubsystem::Deinitialize()
     BindEvent(HealthModel.Get(), TEXT("OnHealthChanged"), this, GET_FUNCTION_NAME_CHECKED(UChronosHUDSubsystem, OnHealthChanged), false);
     BindEvent(TaskManager.Get(), TEXT("OnTareasCambiadas"), this, GET_FUNCTION_NAME_CHECKED(UChronosHUDSubsystem, OnTasksChanged), false);
     if (HUD) HUD->RemoveFromParent();
+    if (Context) Context->RemoveFromParent();
+    Context = nullptr;
     OldWidgets.Reset();
     HUD = nullptr;
     Atlas = nullptr;
@@ -622,6 +701,8 @@ void UChronosHUDSubsystem::Deinitialize()
 void UChronosHUDSubsystem::OnWorldBeginPlay(UWorld& World)
 {
     Super::OnWorldBeginPlay(World);
+    if (World.GetMapName().EndsWith(TEXT("MainMenu"), ESearchCase::IgnoreCase))
+        if (auto* Progress = UChronosProgressState::Get(&World)) Progress->ResetProgress();
     if (!World.GetMapName().EndsWith(TEXT("CHRONOSALPHA"), ESearchCase::IgnoreCase)) return;
     UClass* PoemClass = LoadClass<AActor>(nullptr, TEXT("/Game/Letter/BP-Notas.BP-Notas_C"));
     if (!PoemClass) return;

@@ -1,7 +1,11 @@
 #include "ChronosMenuSettings.h"
+#include "ChronosSaveMenus.h"
 
 #include "ChronosHUDLayer.h"
+#include "ChronosGamepad.h"
+#include "Framework/Application/SlateApplication.h"
 #include "ChronosMenuArt.h"
+#include "ChronosOptionPanels.h"
 #include "ChronosSaveMenus.h"
 #include "Blueprint/WidgetTree.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
@@ -12,15 +16,22 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/VerticalBox.h"
+#include "Components/VerticalBoxSlot.h"
 #include "Components/Image.h"
 #include "Components/NativeWidgetHost.h"
+#include "Components/ScaleBox.h"
+#include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Engine/Font.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundClass.h"
+#include "Sound/SoundMix.h"
+#include "UObject/UnrealType.h"
 #include "Sound/SoundWave.h"
+#include "Types/NavigationMetaData.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Layout/SBorder.h"
@@ -42,6 +53,10 @@ namespace
     {
         return FMath::Clamp(FMath::RoundToInt(Percentage / 10.f) * 10, 70, 150);
     }
+
+    constexpr int32 DefaultMenuSize = 100;
+    constexpr int32 MaxMenuSize = 130;
+    constexpr int32 MenuSizeStep = 5;
 
     // YukoDev — HUD Y ACCESIBILIDAD
     class SChronosHUDSettings final : public SCompoundWidget
@@ -85,6 +100,7 @@ namespace
                 + SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)
                 [SNew(STextBlock).Text(this, &SChronosHUDSettings::PresetName).Font(Font).ColorAndOpacity(Gold)]
             ];
+            TArray<TSharedRef<SWidget>> Sliders;
             for (const auto& Entry : {
                 TPair<FText, FScaleField>{LOCTEXT("Life", "Vida"), &FChronosHUDScales::Life},
                 {LOCTEXT("Stamina", "Resistencia"), &FChronosHUDScales::Stamina},
@@ -93,22 +109,22 @@ namespace
                 {LOCTEXT("Calendar", "Calendario"), &FChronosHUDScales::Calendar}})
             {
                 const FScaleField Field = Entry.Value;
+                auto Slider = SNew(SChronosMenuSlider).MinValue(70).MaxValue(150).StepSize(10).MouseUsesStep(true)
+                    .RequiresControllerLock(false).Style(&SliderStyle())
+                    .Value_Lambda([this, Field] { return static_cast<float>(Pending.*Field); })
+                    .OnValueChanged_Lambda([this, Field](float Value)
+                    {
+                        Pending.*Field = ClampScale(FMath::RoundToInt(Value));
+                        ApplyPreview();
+                    });
+                Sliders.Add(Slider);
                 Form->AddSlot().AutoHeight().Padding(0, 4)
                 [
                     SNew(SHorizontalBox)
                     + SHorizontalBox::Slot().FillWidth(.37f).VAlign(VAlign_Center)
                     [SNew(STextBlock).Text(Entry.Key).Font(Font).ColorAndOpacity(Ivory)]
                     + SHorizontalBox::Slot().FillWidth(.48f).VAlign(VAlign_Center).Padding(0, 0, 14, 0)
-                    [
-                        SNew(SSlider).MinValue(70).MaxValue(150).StepSize(10).MouseUsesStep(true)
-                        .Style(&SliderStyle())
-                        .Value_Lambda([this, Field] { return static_cast<float>(Pending.*Field); })
-                        .OnValueChanged_Lambda([this, Field](float Value)
-                        {
-                            Pending.*Field = ClampScale(FMath::RoundToInt(Value));
-                            ApplyPreview();
-                        })
-                    ]
+                    [Slider]
                     + SHorizontalBox::Slot().FillWidth(.15f).VAlign(VAlign_Center)
                     [
                         SNew(STextBlock).Font(Font).ColorAndOpacity(Ivory)
@@ -116,39 +132,84 @@ namespace
                     ]
                 ];
             }
+            auto SizeButton = SNew(SChronosMenuSizeButton)
+                .ButtonStyle(&ChronosMenuArt::ButtonStyle()).HAlign(HAlign_Center).VAlign(VAlign_Center)
+                .OnClicked(this, &SChronosHUDSettings::CycleMenuSize)
+                [
+                    SNew(STextBlock).Font_Lambda([this] { return ChronosMenuArt::ScaleFont(Font, MenuScale()); })
+                    .ColorAndOpacity(Ivory)
+                    .Text_Lambda([this] { return FText::AsPercent(Pending.MenuButtons / 100.); })
+                ];
+            SizeButton->SetOnStep(SChronosMenuSizeButton::FOnStep::CreateSP(this, &SChronosHUDSettings::StepMenuSize));
+            Sliders.Add(SizeButton);
+            Form->AddSlot().AutoHeight().Padding(0, 4)
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot().FillWidth(.37f).VAlign(VAlign_Center)
+                [SNew(STextBlock).Font(Font).Text(LOCTEXT("MenuButtonSize", "Tamaño de botones")).ColorAndOpacity(Ivory)]
+                + SHorizontalBox::Slot().FillWidth(.48f).Padding(0, 0, 14, 0)
+                [
+                    SNew(SBox).MinDesiredHeight_Lambda([this] { return 38.f * MenuScale(); })
+                    [SizeButton]
+                ]
+                + SHorizontalBox::Slot().FillWidth(.15f)
+                [SNullWidget::NullWidget]
+            ];
+            TSharedPtr<SChronosMenuButton> ResetButton, ConfirmButton, CancelButton;
             Form->AddSlot().AutoHeight().Padding(0, 12, 0, 8)
             [
                 SNew(SHorizontalBox)
                 + SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 8, 0)
-                [Action(LOCTEXT("Reset", "Restablecer interfaz"), FOnClicked::CreateSP(this, &SChronosHUDSettings::SetPreset, 100))]
+                [Action(ResetButton, LOCTEXT("Reset", "Restablecer interfaz"), FOnClicked::CreateSP(this, &SChronosHUDSettings::Reset))]
                 + SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 8, 0)
-                [Action(LOCTEXT("Confirm", "Confirmar cambios"), FOnClicked::CreateSP(this, &SChronosHUDSettings::Confirm))]
+                [Action(ConfirmButton, LOCTEXT("Confirm", "Confirmar cambios"), FOnClicked::CreateSP(this, &SChronosHUDSettings::Confirm))]
                 + SHorizontalBox::Slot().FillWidth(1)
-                [Action(LOCTEXT("Cancel", "Cancelar"), FOnClicked::CreateSP(this, &SChronosHUDSettings::Cancel))]
+                [Action(CancelButton, LOCTEXT("Cancel", "Cancelar"), FOnClicked::CreateSP(this, &SChronosHUDSettings::Cancel))]
             ];
             Form->AddSlot().AutoHeight()
             [SNew(STextBlock).Text_Lambda([this] { return Status; }).Font(Font).ColorAndOpacity(Ivory)];
+            for (const auto& Entry : PresetButtons)
+                Entry.Value->FindOrAddMetaData<FNavigationMetaData>()->SetNavigationExplicit(EUINavigation::Down, Sliders[0]);
+            for (int32 Index = 0; Index < Sliders.Num(); ++Index)
+            {
+                const auto Navigation = Sliders[Index]->FindOrAddMetaData<FNavigationMetaData>();
+                const TSharedRef<SWidget> Up = Index == 0 ? TSharedRef<SWidget>(PresetButtons[0].Value) : Sliders[Index - 1];
+                const TSharedRef<SWidget> Down = Index + 1 < Sliders.Num() ? Sliders[Index + 1] : TSharedRef<SWidget>(ConfirmButton.ToSharedRef());
+                Navigation->SetNavigationExplicit(EUINavigation::Up, Up);
+                Navigation->SetNavigationExplicit(EUINavigation::Down, Down);
+            }
+            for (const auto& Button : {ResetButton, ConfirmButton, CancelButton})
+                Button->FindOrAddMetaData<FNavigationMetaData>()->SetNavigationExplicit(EUINavigation::Up, Sliders.Last());
             ApplyPreview();
         }
 
+        bool SupportsKeyboardFocus() const override { return true; }
+
+        FReply OnFocusReceived(const FGeometry&, const FFocusEvent&) override
+        {
+            return FReply::Handled().SetUserFocus(PresetButtons[0].Value);
+        }
+
     private:
-        TSharedRef<SWidget> Action(const FText& Label, FOnClicked Click)
+        TSharedRef<SWidget> Action(TSharedPtr<SChronosMenuButton>& Button, const FText& Label, FOnClicked Click)
         {
             FSlateFontInfo Small = Font;
             Small.Size = 15;
-            return SNew(SBox).MinDesiredHeight(38)
-                [SNew(SButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).HAlign(HAlign_Center).VAlign(VAlign_Center)
+            return SNew(SBox).MinDesiredHeight_Lambda([this] { return 38.f * MenuScale(); })
+                [SAssignNew(Button, SChronosMenuButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).HAlign(HAlign_Center).VAlign(VAlign_Center)
                     .OnClicked(MoveTemp(Click))
-                    [SNew(STextBlock).Text(Label).Font(Small).ColorAndOpacity(Ivory)]];
+                    [SNew(STextBlock).Text(Label).Font_Lambda([this, Small] { return ChronosMenuArt::ScaleFont(Small, MenuScale()); }).ColorAndOpacity(Ivory)]];
         }
 
         TSharedRef<SWidget> Preset(const FText& Label, int32 Size)
         {
-            TSharedPtr<SButton> Button;
-            auto Widget = SNew(SBox).MinDesiredWidth(116).MinDesiredHeight(36)
-                [SAssignNew(Button, SButton).HAlign(HAlign_Center).VAlign(VAlign_Center)
+            TSharedPtr<SChronosMenuButton> Button;
+            auto Widget = SNew(SBox)
+                .MinDesiredWidth_Lambda([this] { return 116.f * MenuScale(); })
+                .MinDesiredHeight_Lambda([this] { return 36.f * MenuScale(); })
+                [SAssignNew(Button, SChronosMenuButton).ButtonStyle(&ChronosMenuArt::ButtonStyle()).HAlign(HAlign_Center).VAlign(VAlign_Center)
                     .OnClicked(this, &SChronosHUDSettings::SetPreset, Size)
-                    [SNew(STextBlock).Text(Label).Font(Font).ColorAndOpacity(Ivory)]];
+                    [SNew(STextBlock).Text(Label).Font_Lambda([this] { return ChronosMenuArt::ScaleFont(Font, MenuScale()); }).ColorAndOpacity(Ivory)]];
             PresetButtons.Emplace(Size, Button.ToSharedRef());
             return Widget;
         }
@@ -157,6 +218,7 @@ namespace
         {
             static const FSliderStyle Style = FSliderStyle()
                 .SetNormalBarImage(FSlateRoundedBoxBrush(FLinearColor(.47f, .31f, .16f), 2.f, FVector2f(5, 5)))
+                .SetHoveredBarImage(FSlateRoundedBoxBrush(FLinearColor(.76f, .55f, .32f), 2.f, FVector2f(5, 5)))
                 .SetNormalThumbImage(FSlateRoundedBoxBrush(Ivory, 3.f, FVector2f(13, 18)))
                 .SetHoveredThumbImage(FSlateRoundedBoxBrush(FLinearColor(1.f, .82f, .51f), 3.f, FVector2f(13, 18)))
                 .SetBarThickness(5.f);
@@ -171,22 +233,53 @@ namespace
             for (const auto& Entry : PresetButtons)
             {
                 const int32 Size = Entry.Key;
-                Entry.Value->SetButtonStyle(&ChronosMenuArt::ButtonStyle(Pending == FChronosHUDScales{Size, Size, Size, Size, Size}));
+                Entry.Value->SetMenuStyle(ChronosMenuArt::ButtonStyle(IsPreset(Size)));
             }
+        }
+
+        float MenuScale() const { return Pending.MenuButtons / 100.f; }
+
+        bool IsPreset(int32 Size) const
+        {
+            return Pending == FChronosHUDScales{Size, Size, Size, Size, Size, Pending.MenuButtons};
+        }
+
+        void StepMenuSize(int32 Direction)
+        {
+            Pending.MenuButtons = FMath::Clamp(Pending.MenuButtons + Direction * MenuSizeStep, DefaultMenuSize, MaxMenuSize);
+            ApplyPreview();
+        }
+
+        FReply CycleMenuSize()
+        {
+            if (Pending.MenuButtons >= MaxMenuSize)
+            {
+                Pending.MenuButtons = DefaultMenuSize;
+                ApplyPreview();
+            }
+            else StepMenuSize(1);
+            return FReply::Handled();
+        }
+
+        FReply Reset()
+        {
+            Pending = {};
+            ApplyPreview();
+            return FReply::Handled();
         }
 
         FReply SetPreset(int32 Size)
         {
-            Pending = {Size, Size, Size, Size, Size};
+            Pending = {Size, Size, Size, Size, Size, Pending.MenuButtons};
             ApplyPreview();
             return FReply::Handled();
         }
 
         FText PresetName() const
         {
-            if (Pending == FChronosHUDScales{80, 80, 80, 80, 80}) return LOCTEXT("ActiveCompact", "Compacto");
-            if (Pending == FChronosHUDScales{}) return LOCTEXT("ActiveNormal", "Normal");
-            if (Pending == FChronosHUDScales{130, 130, 130, 130, 130}) return LOCTEXT("ActiveLarge", "Grande");
+            if (IsPreset(80)) return LOCTEXT("ActiveCompact", "Compacto");
+            if (IsPreset(100)) return LOCTEXT("ActiveNormal", "Normal");
+            if (IsPreset(130)) return LOCTEXT("ActiveLarge", "Grande");
             return LOCTEXT("Custom", "Personalizado");
         }
 
@@ -209,9 +302,18 @@ namespace
         FChronosHUDScales Pending;
         FSlateFontInfo Font;
         FText Status;
-        TArray<TPair<int32, TSharedRef<SButton>>> PresetButtons;
+        TArray<TPair<int32, TSharedRef<SChronosMenuButton>>> PresetButtons;
     };
 }
+
+void ChronosMenuArt::PlaceOptionsPanel(UCanvasPanelSlot& PanelSlot, bool bInset)
+{
+    PanelSlot.SetAnchors(FAnchors(.304f, .045f, .955f, .955f));
+    PanelSlot.SetAlignment(FVector2D::ZeroVector);
+    PanelSlot.SetAutoSize(false);
+    PanelSlot.SetOffsets(bInset ? FMargin(48, 46, 48, 58) : FMargin(0));
+}
+
 
 USaveGame* UChronosOptionsSave::LoadOptionsForWrite(TSubclassOf<USaveGame> SaveClass)
 {
@@ -227,8 +329,11 @@ void UChronosMenuSettings::Initialize(FSubsystemCollectionBase& Collection)
     if (const auto* Save = Cast<UChronosOptionsSave>(UGameplayStatics::LoadGameFromSlot(OptionsSlot, 0)))
     {
         Confirmed = {ClampScale(Save->HUDLife), ClampScale(Save->HUDStamina), ClampScale(Save->HUDLamp),
-            ClampScale(Save->HUDMap), ClampScale(Save->HUDCalendar)};
+            ClampScale(Save->HUDMap), ClampScale(Save->HUDCalendar),
+            FMath::Clamp(Save->MenuButtonSize, DefaultMenuSize, MaxMenuSize)};
+        VisibleMenuSize = Confirmed.MenuButtons;
         MenuMusicPercent = FMath::Clamp(Save->MenuMusicPercent, 0, 100);
+        ControlsZoom = FMath::Clamp(Save->ControlsZoom, 75, 150);
     }
     MusicTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UChronosMenuSettings::UpdateMenuMusic), .1f);
 }
@@ -259,6 +364,7 @@ void UChronosMenuSettings::AttachHUD(UChronosHUDLayer* HUD)
 
 void UChronosMenuSettings::Preview(const FChronosHUDScales& Scales)
 {
+    VisibleMenuSize = Scales.MenuButtons;
     if (LiveHUD.IsValid()) LiveHUD->SetScales(Scales);
 }
 
@@ -277,23 +383,78 @@ bool UChronosMenuSettings::Commit(const FChronosHUDScales& Scales)
     Save->HUDLamp = Scales.Lamp;
     Save->HUDMap = Scales.Map;
     Save->HUDCalendar = Scales.Calendar;
+    Save->MenuButtonSize = Scales.MenuButtons;
     if (!UGameplayStatics::SaveGameToSlot(Save, OptionsSlot, 0)) return false;
     Confirmed = Scales;
     Preview(Confirmed);
     return true;
 }
 
-bool UChronosMenuSettings::SetMusicVolume(int32 Percentage)
+FVector3f UChronosMenuSettings::AudioVolumes() const
+{
+    const auto* Instance = GetGameInstance();
+    const auto Read = [Instance](FName Name)
+    {
+        const auto* Property = FindFProperty<FDoubleProperty>(Instance->GetClass(), Name);
+        return Property ? static_cast<float>(FMath::Clamp(Property->GetPropertyValue_InContainer(Instance), 0., 1.)) : 1.f;
+    };
+    return FVector3f(Read(TEXT("volumenGeneral")), Read(TEXT("volumenAmbiente")), MenuMusicPercent / 100.f);
+}
+
+void UChronosMenuSettings::PreviewAudioVolumes(const FVector3f& Volumes)
+{
+    UWorld* World = GetGameInstance()->GetWorld();
+    if (!World || !World->IsGameWorld()) return;
+    static const auto Mix = TSoftObjectPtr<USoundMix>(FSoftObjectPath(TEXT("/Game/Sonido/SMix_Opciones.SMix_Opciones")));
+    static const auto Master = TSoftObjectPtr<USoundClass>(FSoftObjectPath(TEXT("/Engine/EngineSounds/Master.Master")));
+    static const auto Atmosphere = TSoftObjectPtr<USoundClass>(FSoftObjectPath(TEXT("/Game/Sonido/SC_Ambiente.SC_Ambiente")));
+    if (auto* Modifier = Mix.LoadSynchronous())
+    {
+        UGameplayStatics::SetSoundMixClassOverride(World, Modifier, Master.LoadSynchronous(), Volumes.X, 1.f, 0.f, true);
+        UGameplayStatics::SetSoundMixClassOverride(World, Modifier, Atmosphere.LoadSynchronous(), Volumes.X * Volumes.Y, 1.f, 0.f, true);
+        if (VolumeWorld.Get() != World)
+        {
+            UGameplayStatics::PushSoundMixModifier(World, Modifier);
+            VolumeWorld = World;
+        }
+    }
+    PreviewMusicVolume = Volumes.Z;
+    if (MenuMusic) MenuMusic->SetVolumeMultiplier(PreviewMusicVolume);
+}
+
+bool UChronosMenuSettings::SaveAudioVolumes(const FVector3f& Volumes)
+{
+    auto* Instance = GetGameInstance();
+    const auto SaveClass = LoadClass<UChronosOptionsSave>(nullptr, OptionsClass);
+    auto* Save = Cast<UChronosOptionsSave>(UChronosOptionsSave::LoadOptionsForWrite(SaveClass));
+    if (!Save) return false;
+    const auto* General = FindFProperty<FDoubleProperty>(Save->GetClass(), TEXT("volumenGeneral"));
+    const auto* Ambient = FindFProperty<FDoubleProperty>(Save->GetClass(), TEXT("volumenAmbiente"));
+    const auto* LiveGeneral = FindFProperty<FDoubleProperty>(Instance->GetClass(), TEXT("volumenGeneral"));
+    const auto* LiveAmbient = FindFProperty<FDoubleProperty>(Instance->GetClass(), TEXT("volumenAmbiente"));
+    if (!General || !Ambient || !LiveGeneral || !LiveAmbient) return false;
+    General->SetPropertyValue_InContainer(Save, Volumes.X);
+    Ambient->SetPropertyValue_InContainer(Save, Volumes.Y);
+    Save->MenuMusicPercent = FMath::RoundToInt(Volumes.Z * 100.f);
+    if (!UGameplayStatics::SaveGameToSlot(Save, OptionsSlot, 0)) return false;
+    LiveGeneral->SetPropertyValue_InContainer(Instance, Volumes.X);
+    LiveAmbient->SetPropertyValue_InContainer(Instance, Volumes.Y);
+    MenuMusicPercent = Save->MenuMusicPercent;
+    PreviewAudioVolumes(Volumes);
+    return true;
+}
+
+bool UChronosMenuSettings::SetBindingZoom(int32 Percentage)
 {
     const auto Class = LoadClass<UChronosOptionsSave>(nullptr, OptionsClass);
     auto* Save = Cast<UChronosOptionsSave>(UChronosOptionsSave::LoadOptionsForWrite(Class));
     if (!Save) return false;
-    Save->MenuMusicPercent = FMath::Clamp(Percentage, 0, 100);
+    Save->ControlsZoom = FMath::Clamp(Percentage, 75, 150);
     if (!UGameplayStatics::SaveGameToSlot(Save, OptionsSlot, 0)) return false;
-    MenuMusicPercent = Save->MenuMusicPercent;
-    if (MenuMusic) MenuMusic->SetVolumeMultiplier(MenuMusicPercent / 100.f);
+    ControlsZoom = Save->ControlsZoom;
     return true;
 }
+
 
 // YukoDev — AUDIO DE MENÚS
 bool UChronosMenuSettings::UpdateMenuMusic(float)
@@ -301,7 +462,8 @@ bool UChronosMenuSettings::UpdateMenuMusic(float)
     UWorld* World = GetGameInstance()->GetWorld();
     if (!World || !World->IsGameWorld() || !World->HasBegunPlay() || !World->GetFirstPlayerController()) return true;
     const bool bMainMenu = World->GetMapName().EndsWith(TEXT("MainMenu"), ESearchCase::IgnoreCase);
-    bWantsMusic = bMainMenu || (World->IsPaused() && World->GetFirstPlayerController()->GetPawn());
+    if (VolumeWorld.Get() != World) PreviewAudioVolumes(AudioVolumes());
+    bWantsMusic = bMainMenu || UChronosPauseMenu::IsOpen(World);
 
     if (!bWantsMusic)
     {
@@ -323,7 +485,7 @@ bool UChronosMenuSettings::UpdateMenuMusic(float)
     {
         auto* Song = LoadObject<USoundWave>(nullptr, SongPath);
         if (!Song) return true;
-        MenuMusic = UGameplayStatics::CreateSound2D(World, Song, MenuMusicPercent / 100.f, 1.f, 0.f, nullptr, true, false);
+        MenuMusic = UGameplayStatics::CreateSound2D(World, Song, PreviewMusicVolume, 1.f, 0.f, nullptr, true, false);
         if (!MenuMusic) return true;
         MenuMusic->bIsUISound = true;
         MenuMusic->SoundClassOverride = LoadObject<USoundClass>(nullptr, TEXT("/Engine/EngineSounds/Master.Master"));
@@ -351,13 +513,18 @@ void UChronosOptionsMenu::NativeConstruct()
         Label->SetText(LOCTEXT("HUDNavigation", "Interfaz y HUD"));
         Button->OnClicked.AddUniqueDynamic(this, &UChronosOptionsMenu::OpenHUDSettings);
     }
-    AddMenuMusicRow();
+    for (FName Name : {FName(TEXT("BTN-GRAFICOS")), FName(TEXT("BTN-volumen")),
+        FName(TEXT("BTN-Controles")), FName(TEXT("BTN-IDIOMA")), FName(TEXT("BTN-BACK"))})
+        if (auto* Tab = Cast<UButton>(GetWidgetFromName(Name))) SidebarButtons.Add(Tab);
+    AlignOptionsShell();
     ThemeExistingPanel();
+    if (auto* Pad = UChronosGamepad::Get(GetOwningPlayer())) Pad->OptionsMenu = this;
     if (auto* First = InitialFocus(); First && GetOwningPlayer()) First->SetUserFocus(GetOwningPlayer());
 }
 
 UWidget* UChronosOptionsMenu::InitialFocus() const
 {
+    if (HUDPanel) return GetWidgetFromName(TEXT("BTN-IDIOMA"));
     const FName Preferred[] = {TEXT("BTN-GRAFICOS"), TEXT("BTN-volumen"), TEXT("BTN-Controles")};
     const int32 Section = GetWidgetFromName(TEXT("panelVolumen")) ? 1 : GetWidgetFromName(TEXT("panelControles")) ? 2 : 0;
     return GetWidgetFromName(Preferred[Section]);
@@ -372,7 +539,15 @@ FReply UChronosOptionsMenu::NativeOnFocusReceived(const FGeometry& Geometry, con
 
 void UChronosOptionsMenu::NativeDestruct()
 {
+    if (auto* Pad = UChronosGamepad::Get(GetOwningPlayer()); Pad && Pad->OptionsMenu.Get() == this)
+        Pad->OptionsMenu.Reset();
     CloseHUDSettings();
+    SidebarFocus.Set(nullptr);
+    SidebarButtons.Reset();
+    bHorizontalStickHeld = false;
+    AppliedMenuScale = 0.f;
+    if (SelectorHost) SelectorHost->RemoveFromParent();
+    SelectorHost = nullptr;
     RestorePauseFocus();
     Super::NativeDestruct();
 }
@@ -386,6 +561,69 @@ void UChronosOptionsMenu::RestorePauseFocus()
                 if (!Pause->IsInViewport()) Pause->AddToViewport(90);
                 Pause->FocusOptionsEntry();
             }
+}
+
+UNativeWidgetHost* UChronosOptionsMenu::ActivePanel() const
+{
+    return HUDPanel ? HUDPanel.Get() : SelectorHost.Get();
+}
+
+void UChronosOptionsMenu::NativeTick(const FGeometry& Geometry, float DeltaTime)
+{
+    Super::NativeTick(Geometry, DeltaTime);
+    SidebarFocus.Set(SidebarButtons, GetOwningPlayer());
+    if (const auto* Settings = UChronosMenuSettings::Get(this); Settings && AppliedMenuScale != Settings->MenuScale())
+    {
+        AppliedMenuScale = Settings->MenuScale();
+        const FVector2D Scale(FMath::Lerp(1.f, AppliedMenuScale, .15f), AppliedMenuScale);
+        for (const auto& Entry : SidebarButtons)
+            if (auto* Button = Entry.Get()) Button->SetRenderScale(Scale);
+    }
+}
+
+bool UChronosOptionsMenu::HandleHorizontalStick(FSlateApplication& Slate, const FAnalogInputEvent& Event)
+{
+    const float Axis = Event.GetAnalogValue();
+    if (FMath::Abs(Axis) <= .35f)
+    {
+        bHorizontalStickHeld = false;
+        return false;
+    }
+    if (!IsInViewport() || !IsVisible() || !HasUserFocusedDescendants(GetOwningPlayer())) return false;
+    if (bHorizontalStickHeld) return true;
+
+    const auto* Panel = ActivePanel();
+    auto* Tab = InitialFocus();
+    if (!Panel || !Tab) return false;
+
+    auto* Player = GetOwningPlayer();
+    if (Panel->HasUserFocusedDescendants(Player))
+    {
+        if (Axis <= -.55f)
+            bHorizontalStickHeld = Slate.SetUserFocus(Event.GetUserIndex(), Tab->TakeWidget(), EFocusCause::Navigation);
+        return Axis < 0.f || HUDPanel || GetWidgetFromName(TEXT("panelVolumen"));
+    }
+    if (Axis > 0.f && Tab->HasUserFocus(Player))
+    {
+        if (Axis >= .55f)
+            if (const auto Content = Panel->GetContent())
+                bHorizontalStickHeld = Slate.SetUserFocus(Event.GetUserIndex(), Content, EFocusCause::Navigation);
+        return true;
+    }
+    return false;
+}
+
+FReply UChronosOptionsMenu::NativeOnPreviewKeyDown(const FGeometry& Geometry, const FKeyEvent& Event)
+{
+    if (Event.GetKey() == EKeys::Right || Event.GetKey() == EKeys::Gamepad_DPad_Right)
+    {
+        const auto* Panel = ActivePanel();
+        const auto* Tab = InitialFocus();
+        if (Panel && Tab && Tab->HasUserFocus(GetOwningPlayer()))
+            if (const auto Content = Panel->GetContent())
+                return FReply::Handled().SetUserFocus(Content.ToSharedRef(), EFocusCause::Navigation);
+    }
+    return Super::NativeOnPreviewKeyDown(Geometry, Event);
 }
 
 FReply UChronosOptionsMenu::NativeOnKeyDown(const FGeometry& Geometry, const FKeyEvent& Event)
@@ -407,172 +645,114 @@ FReply UChronosOptionsMenu::NativeOnKeyDown(const FGeometry& Geometry, const FKe
     return FReply::Handled();
 }
 
+void UChronosOptionsMenu::AlignOptionsShell()
+{
+    const bool bGraphics = GetWidgetFromName(TEXT("BTN-apply")) != nullptr;
+    const bool bBuildPremiumSidebar = bGraphics && !Backdrop;
+    if (const auto* Sidebar = GetWidgetFromName(TEXT("VerticalBox_72")))
+        if (auto* SidebarSlot = Cast<UCanvasPanelSlot>(Sidebar->Slot))
+        {
+            SidebarSlot->SetAnchors(FAnchors(bGraphics ? .017f : 0.f, .035f, bGraphics ? .188f : .293f, .96f));
+            SidebarSlot->SetOffsets(FMargin(0));
+        }
+    if (const auto* Crest = GetWidgetFromName(TEXT("Image_86")))
+        if (auto* CrestSlot = Cast<UCanvasPanelSlot>(Crest->Slot))
+        {
+            CrestSlot->SetAnchors(FAnchors(0.f, 0.f, bGraphics ? .195f : .293f, .4f));
+            CrestSlot->SetOffsets(FMargin(0));
+        }
+    UWidget* Frame = GetWidgetFromName(TEXT("marcoPanel"));
+    if (!Frame) Frame = GetWidgetFromName(TEXT("Image_80"));
+    if (auto* Image = Cast<UImage>(Frame))
+    {
+        Image->SetBrush(ChronosMenuArt::OptionsPanel());
+        Image->SetVisibility(bGraphics ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+        if (auto* FrameSlot = Cast<UCanvasPanelSlot>(Image->Slot))
+            ChronosMenuArt::PlaceOptionsPanel(*FrameSlot);
+    }
+    if (auto* Canvas = Cast<UCanvasPanel>(GetRootWidget()); Canvas && !Backdrop)
+    {
+        Backdrop = WidgetTree->ConstructWidget<UImage>();
+        if (bGraphics) Backdrop->SetBrush(ChronosMenuArt::Premium(TEXT("fondo_iglesia_desenfocado_1920x1080")));
+        else Backdrop->SetBrush(FSlateRoundedBoxBrush(FLinearColor(.010f, .008f, .006f, .49f), 4.f));
+        Backdrop->SetVisibility(ESlateVisibility::HitTestInvisible);
+        auto* BackdropSlot = Canvas->AddChildToCanvas(Backdrop);
+        BackdropSlot->SetAnchors(FAnchors(0, 0, 1, 1));
+        BackdropSlot->SetOffsets(FMargin(0));
+        BackdropSlot->SetZOrder(1);
+        if (Frame)
+            if (auto* FrameSlot = Cast<UCanvasPanelSlot>(Frame->Slot)) FrameSlot->SetZOrder(2);
+        for (FName Name : {FName(TEXT("VerticalBox_72")), FName(TEXT("Image_86")),
+            FName(TEXT("CanvasPanel_153")), FName(TEXT("panelVolumen")), FName(TEXT("panelControles"))})
+            if (const auto* Child = GetWidgetFromName(Name))
+                if (auto* ChildSlot = Cast<UCanvasPanelSlot>(Child->Slot)) ChildSlot->SetZOrder(3);
+    }
+    if (!bBuildPremiumSidebar) return;
+    const TCHAR* Icons[] = {TEXT("pantalla"), TEXT("audio"), TEXT("mando"), TEXT("hud"), TEXT("flecha_atras")};
+    for (int32 Index = 0; Index < SidebarButtons.Num() && Index < UE_ARRAY_COUNT(Icons); ++Index)
+    {
+        auto* Tab = SidebarButtons[Index].Get();
+        if (!Tab || !Tab->GetContent()) continue;
+        auto* Caption = Tab->GetContent();
+        UWidgetTree::ForWidgetAndChildren(Caption, [](UWidget* Widget)
+        {
+            if (auto* Label = Cast<UTextBlock>(Widget))
+            {
+                auto Font = Label->GetFont();
+                Font.Size = FMath::Min(Font.Size, 20.f);
+                Label->SetFont(Font);
+            }
+        });
+        Caption->RemoveFromParent();
+        auto* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
+        auto* Symbol = WidgetTree->ConstructWidget<UImage>();
+        FSlateBrush Brush = ChronosMenuArt::Premium(FString::Printf(TEXT("icono_%s_48x48"), Icons[Index]));
+        Brush.ImageSize = FVector2D(31, 31);
+        Symbol->SetBrush(Brush);
+        auto* IconSlot = Row->AddChildToHorizontalBox(Symbol);
+        IconSlot->SetPadding(FMargin(8, 0, 13, 0));
+        IconSlot->SetVerticalAlignment(VAlign_Center);
+        Row->AddChildToHorizontalBox(Caption)->SetVerticalAlignment(VAlign_Center);
+        auto* Fit = WidgetTree->ConstructWidget<UScaleBox>();
+        Fit->SetStretch(EStretch::ScaleToFit);
+        Fit->SetStretchDirection(EStretchDirection::DownOnly);
+        Fit->SetContent(Row);
+        auto* TabContent = CastChecked<UButtonSlot>(Tab->SetContent(Fit));
+        TabContent->SetHorizontalAlignment(HAlign_Fill);
+        if (auto* TabSlot = Cast<UVerticalBoxSlot>(Tab->Slot)) TabSlot->SetHorizontalAlignment(HAlign_Fill);
+        if (Index < 4)
+        {
+            auto Artwork = ChronosMenuArt::PremiumButton(TEXT("navegacion_pestana"), Index == 0);
+            if (Index != 0) Artwork.SetNormal(FSlateNoResource());
+            Tab->SetStyle(Artwork);
+        }
+    }
+}
+
+
 void UChronosOptionsMenu::ThemeExistingPanel()
 {
     const bool bGraphics = GetWidgetFromName(TEXT("BTN-apply")) != nullptr;
-    const bool bVolume = GetWidgetFromName(TEXT("volGenMenos")) != nullptr;
-    if (!bGraphics && !bVolume) return;
+    auto* Legacy = GetWidgetFromName(bGraphics ? TEXT("CanvasPanel_153") : TEXT("panelVolumen"));
+    auto* Root = Cast<UCanvasPanel>(GetRootWidget());
+    const auto* Label = Cast<UTextBlock>(GetWidgetFromName(TEXT("TextBlock_161")));
+    if (!Legacy || !Root || !Label || SelectorHost) return;
 
-    if (auto* Frame = Cast<UImage>(GetWidgetFromName(bGraphics ? TEXT("Image_80") : TEXT("marcoPanel"))))
-        Frame->SetBrush(ChronosMenuArt::OptionsPanel());
-
-    const FName GraphicsRows[] = {TEXT("win-"), TEXT("res-"), TEXT("sync-"), TEXT("fps-"),
-        TEXT("graf-"), TEXT("texture-"), TEXT("som-"), TEXT("efect-")};
-    const FName VolumeRows[] = {TEXT("volGenMenos"), TEXT("volAmbMenos")};
-    const TArrayView<const FName> Rows = bGraphics ? MakeArrayView(GraphicsRows) : MakeArrayView(VolumeRows);
-    SelectorButtons.Reset();
-    TArray<TPair<UButton*, UButton*>> Arrows;
-    for (int32 Index = 0; Index < Rows.Num(); ++Index)
+    Legacy->SetVisibility(ESlateVisibility::Collapsed);
+    auto* Host = WidgetTree->ConstructWidget<UNativeWidgetHost>();
+    SelectorHost = Host;
+    Host->SetContent(bGraphics ? MakeChronosGraphicsPanel(Label->GetFont(), UChronosMenuSettings::Get(this))
+        : MakeChronosVolumePanel(Label->GetFont(), UChronosMenuSettings::Get(this)));
+    auto* Layout = Root->AddChildToCanvas(Host);
+    if (bGraphics)
     {
-        auto* Decrease = GetWidgetFromName(Rows[Index]);
-        auto* Row = Decrease ? Cast<UHorizontalBox>(Decrease->GetParent()) : nullptr;
-        if (Row) FormatSelector(*Row, Index, Arrows);
+        Layout->SetAnchors(FAnchors(.197f, .018f, .995f, .945f));
+        Layout->SetOffsets(FMargin(0));
     }
-    if (bVolume && MusicValue)
-        if (auto* Row = Cast<UHorizontalBox>(MusicValue->GetParent()))
-            FormatSelector(*Row, Rows.Num(), Arrows);
-
-    auto* Section = InitialFocus();
-    auto* Apply = Cast<UButton>(GetWidgetFromName(TEXT("BTN-apply")));
-    if (Section && !Arrows.IsEmpty())
-        Section->SetNavigationRuleExplicit(EUINavigation::Right, Arrows[0].Key);
-    for (int32 Index = 0; Index < Arrows.Num(); ++Index)
-    {
-        auto [Decrease, Increase] = Arrows[Index];
-        Decrease->SetNavigationRuleExplicit(EUINavigation::Right, Increase);
-        Increase->SetNavigationRuleExplicit(EUINavigation::Left, Decrease);
-        if (Section) Decrease->SetNavigationRuleExplicit(EUINavigation::Left, Section);
-        if (Index > 0)
-        {
-            Decrease->SetNavigationRuleExplicit(EUINavigation::Up, Arrows[Index - 1].Key);
-            Increase->SetNavigationRuleExplicit(EUINavigation::Up, Arrows[Index - 1].Value);
-        }
-        if (Index + 1 < Arrows.Num())
-        {
-            Decrease->SetNavigationRuleExplicit(EUINavigation::Down, Arrows[Index + 1].Key);
-            Increase->SetNavigationRuleExplicit(EUINavigation::Down, Arrows[Index + 1].Value);
-        }
-        else if (Apply)
-        {
-            Decrease->SetNavigationRuleExplicit(EUINavigation::Down, Apply);
-            Increase->SetNavigationRuleExplicit(EUINavigation::Down, Apply);
-        }
-    }
-    if (Apply)
-    {
-        Apply->SetStyle(ChronosMenuArt::ConfirmStyle());
-        Apply->SetToolTipText(LOCTEXT("ApplyGraphics", "Aplicar cambios gráficos"));
-        if (auto* Label = Apply->GetContent()) Label->SetRenderOpacity(0.f);
-        if (auto* LayoutSlot = Cast<UCanvasPanelSlot>(Apply->Slot))
-        {
-            LayoutSlot->SetAnchors(FAnchors(.5f, 0));
-            LayoutSlot->SetAlignment(FVector2D(.5f, 0));
-            LayoutSlot->SetPosition(FVector2D(0, 875));
-            LayoutSlot->SetSize(FVector2D(350, 65));
-        }
-        if (!Arrows.IsEmpty()) Apply->SetNavigationRuleExplicit(EUINavigation::Up, Arrows.Last().Key);
-    }
+    else ChronosMenuArt::PlaceOptionsPanel(*Layout, true);
+    Layout->SetZOrder(4);
+    UE_LOG(LogTemp, Display, TEXT("Chronos options panel active: %s."), *GetClass()->GetPathName());
 }
-
-void UChronosOptionsMenu::FormatSelector(UHorizontalBox& Row, int32 Index, TArray<TPair<UButton*, UButton*>>& Arrows)
-{
-    auto* CanvasSlot = Cast<UCanvasPanelSlot>(Row.Slot);
-    auto* Decrease = Cast<UButton>(Row.GetChildAt(1));
-    auto* Increase = Cast<UButton>(Row.GetChildAt(3));
-    if (!CanvasSlot || !Decrease || !Increase) return;
-
-    CanvasSlot->SetAnchors(FAnchors(0, 0, 1, 0));
-    CanvasSlot->SetOffsets(FMargin(32, 28 + Index * 100, 56, 66));
-    const float ColumnWidths[] = {.46f, .075f, .39f, .075f};
-    for (int32 Column = 0; Column < 4; ++Column)
-    {
-        auto* Child = Row.GetChildAt(Column);
-        if (!Child) continue;
-        if (auto* LayoutSlot = Cast<UHorizontalBoxSlot>(Child->Slot))
-        {
-            FSlateChildSize Width(ESlateSizeRule::Fill);
-            Width.Value = ColumnWidths[Column];
-            LayoutSlot->SetSize(Width);
-            LayoutSlot->SetPadding(FMargin(0, 0, 0, 0));
-            LayoutSlot->SetVerticalAlignment(Column % 2 ? VAlign_Fill : VAlign_Center);
-            LayoutSlot->SetHorizontalAlignment(HAlign_Fill);
-        }
-        if (auto* Label = Cast<UTextBlock>(Child); Label && Column == 2)
-            Label->SetJustification(ETextJustify::Center);
-    }
-    for (UButton* Control : {Decrease, Increase})
-    {
-        Control->SetStyle(ChronosMenuArt::ButtonStyle());
-        SelectorButtons.Add(Control);
-        if (auto* Image = Cast<UImage>(Control->GetContent()))
-        {
-            Image->SetDesiredSizeOverride(FVector2D(32, 20));
-            Image->SetVisibility(ESlateVisibility::HitTestInvisible);
-        }
-        if (auto* LayoutSlot = Cast<UButtonSlot>(Control->GetContent() ? Control->GetContent()->Slot : nullptr))
-        {
-            LayoutSlot->SetHorizontalAlignment(HAlign_Center);
-            LayoutSlot->SetVerticalAlignment(VAlign_Center);
-        }
-    }
-    Arrows.Emplace(Decrease, Increase);
-}
-
-void UChronosOptionsMenu::NativeTick(const FGeometry& Geometry, float DeltaTime)
-{
-    Super::NativeTick(Geometry, DeltaTime);
-    for (const auto& Entry : SelectorButtons)
-        if (auto* Button = Entry.Get())
-        {
-            const auto& Style = ChronosMenuArt::ButtonStyle(Button->HasUserFocus(GetOwningPlayer()));
-            if (Button->GetStyle().Normal.GetResourceObject() != Style.Normal.GetResourceObject())
-                Button->SetStyle(Style);
-        }
-}
-
-void UChronosOptionsMenu::AddMenuMusicRow()
-{
-    auto* Panel = Cast<UCanvasPanel>(GetWidgetFromName(TEXT("panelVolumen")));
-    auto* Model = UChronosMenuSettings::Get(this);
-    const auto* Label = Cast<UTextBlock>(GetWidgetFromName(TEXT("txtAmbiente")));
-    auto* LeftTemplate = Cast<UButton>(GetWidgetFromName(TEXT("volAmbMenos")));
-    auto* RightTemplate = Cast<UButton>(GetWidgetFromName(TEXT("volAmbMas")));
-    if (MusicValue || !Panel || !Label || !Model || !LeftTemplate || !RightTemplate) return;
-
-    auto* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-    const auto AddText = [&](const FText& Text)
-    {
-        auto* Value = WidgetTree->ConstructWidget<UTextBlock>();
-        Value->SetFont(Label->GetFont());
-        Value->SetColorAndOpacity(FSlateColor(Ivory));
-        Value->SetText(Text);
-        Row->AddChildToHorizontalBox(Value);
-        return Value;
-    };
-    const auto AddArrow = [&](UButton& Template, const FText& Tooltip)
-    {
-        auto* Control = WidgetTree->ConstructWidget<UButton>();
-        Control->SetToolTipText(Tooltip);
-        if (auto* Image = Cast<UImage>(Template.GetContent()))
-            Control->AddChild(DuplicateObject<UImage>(Image, Control));
-        Row->AddChildToHorizontalBox(Control);
-        return Control;
-    };
-    AddText(LOCTEXT("MenuMusic", "Música del menú"));
-    AddArrow(*LeftTemplate, LOCTEXT("LowerMusic", "Bajar música del menú"))->OnClicked.AddDynamic(this, &UChronosOptionsMenu::LowerMenuMusic);
-    MusicValue = AddText(FText::AsPercent(Model->MusicVolume() / 100.));
-    AddArrow(*RightTemplate, LOCTEXT("RaiseMusic", "Subir música del menú"))->OnClicked.AddDynamic(this, &UChronosOptionsMenu::RaiseMenuMusic);
-    Panel->AddChildToCanvas(Row);
-}
-
-void UChronosOptionsMenu::AdjustMenuMusic(int32 Delta)
-{
-    if (auto* Model = UChronosMenuSettings::Get(this); Model && MusicValue && Model->SetMusicVolume(Model->MusicVolume() + Delta))
-        MusicValue->SetText(FText::AsPercent(Model->MusicVolume() / 100.));
-}
-
-void UChronosOptionsMenu::LowerMenuMusic() { AdjustMenuMusic(-5); }
-void UChronosOptionsMenu::RaiseMenuMusic() { AdjustMenuMusic(5); }
 
 void UChronosOptionsMenu::OpenHUDSettings()
 {
@@ -583,11 +763,12 @@ void UChronosOptionsMenu::OpenHUDSettings()
     auto* HUDTab = Cast<UButton>(GetWidgetFromName(TEXT("BTN-IDIOMA")));
     if (!Canvas || !Label || !HUDTab || !Settings) return;
 
+    SidebarFocus.Set(nullptr);
     auto* Column = HUDTab->GetParent();
     for (UWidget* Child : Canvas->GetAllChildren())
     {
         if (Child == Column || Child->GetFName() == TEXT("Image_54") || Child->GetFName() == TEXT("fondoPausa")
-            || Child->GetFName() == TEXT("Image_86")) continue;
+            || Child->GetFName() == TEXT("Image_86") || Child == Backdrop) continue;
         SectionVisibility.Emplace(Child, Child->GetVisibility());
         Child->SetVisibility(ESlateVisibility::Collapsed);
     }
@@ -612,23 +793,23 @@ void UChronosOptionsMenu::OpenHUDSettings()
         SampleHUD->Clock = TEXT("Lunes  15:45");
         SampleHUD->Day = TEXT("Día 1");
         auto* SampleSlot = Canvas->AddChildToCanvas(SampleHUD);
-        SampleSlot->SetAnchors(FAnchors(.33f, .07f, .94f, .48f));
+        SampleSlot->SetAnchors(FAnchors(.375f, .65f, .945f, .925f));
         SampleSlot->SetOffsets(FMargin(0));
-        SampleSlot->SetZOrder(40);
+        SampleSlot->SetZOrder(42);
     }
     auto* Host = WidgetTree->ConstructWidget<UNativeWidgetHost>();
     HUDPanel = Host;
     Host->SetContent(SNew(SChronosHUDSettings).Settings(Settings).Sample(SampleHUD.Get()).Font(Label->GetFont())
         .Close(FSimpleDelegate::CreateUObject(this, &UChronosOptionsMenu::CloseHUDSettings)));
     auto* PanelSlot = Canvas->AddChildToCanvas(Host);
-    PanelSlot->SetAnchors(FAnchors(.35f, bShowSample ? .49f : .06f, .97f, .98f));
-    PanelSlot->SetOffsets(FMargin(0));
+    ChronosMenuArt::PlaceOptionsPanel(*PanelSlot);
     PanelSlot->SetZOrder(41);
 }
 
 void UChronosOptionsMenu::CloseHUDSettings()
 {
     if (!HUDPanel) return;
+    SidebarFocus.Set(nullptr);
     if (auto* Settings = UChronosMenuSettings::Get(this)) Settings->Revert();
     if (SampleHUD) SampleHUD->RemoveFromParent();
     if (HUDPanel) HUDPanel->RemoveFromParent();

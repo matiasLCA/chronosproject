@@ -4,6 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Engine/DataTable.h"
 #include "GameFramework/SaveGame.h"
+#include "ChronosMenuFocus.h"
 #include "ChronosJournal.generated.h"
 
 class UButton;
@@ -137,6 +138,9 @@ private:
 
     UPROPERTY(Transient)
     TArray<TObjectPtr<UButton>> Tabs;
+
+    TArray<TWeakObjectPtr<UButton>> JournalButtons;
+    FChronosWidgetFocus JournalFocus;
 
     UPROPERTY(Transient)
     TArray<TObjectPtr<UTextBlock>> TabLabels;

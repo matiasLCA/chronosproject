@@ -2,6 +2,7 @@
 
 #include "GameFramework/SaveGame.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "ChronosProgress.h"
 #include "ChronosPlayerSave.generated.h"
 
 USTRUCT()
@@ -22,6 +23,12 @@ class CHRONOSHUD_API UChronosPlayerSave : public USaveGame
     GENERATED_BODY()
 
 public:
+    UPROPERTY(SaveGame)
+    FChronosProgress Gameplay;
+
+    UPROPERTY(SaveGame)
+    bool bHasGameplayProgress = false;
+
     UPROPERTY(SaveGame)
     FGuid Revision;
 

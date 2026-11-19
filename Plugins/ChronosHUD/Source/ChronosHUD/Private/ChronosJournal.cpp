@@ -210,6 +210,11 @@ bool UChronosJournal::Prepare(UFont* InFont)
     Place(Canvas, Cover, FVector2D(470, 61), FVector2D(660, 824));
     PaperSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Letter/S-PegarNota.S-PegarNota"));
     PageTurnSound = LoadArt<USoundBase>(TEXT("Book_Pages"));
+    JournalButtons.Reset();
+    WidgetTree->ForEachWidget([this](UWidget* Widget)
+    {
+        if (auto* Button = Cast<UButton>(Widget)) JournalButtons.Add(Button);
+    });
     return true;
 }
 
@@ -325,6 +330,7 @@ void UChronosJournal::ReadEntry(FName Id)
 
 void UChronosJournal::DrawPages(bool bResetScroll)
 {
+    JournalFocus.Set(nullptr);
     const int32 Zoom = Progress->ZoomStep;
     const double Magnification = 1. + .25 * Zoom;
     const FLinearColor BodyInk = Progress->bHighContrast ? FLinearColor::Black : Ink;
@@ -506,6 +512,7 @@ void UChronosJournal::Turn()
 void UChronosJournal::NativeTick(const FGeometry& Geometry, float DeltaTime)
 {
     Super::NativeTick(Geometry, DeltaTime);
+    JournalFocus.Set(JournalButtons, GetOwningPlayer());
     if (InputHints)
     {
         const auto* Pad = UChronosGamepad::Get(GetOwningPlayer());

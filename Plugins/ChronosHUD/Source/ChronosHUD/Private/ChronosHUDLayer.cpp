@@ -1,4 +1,9 @@
 #include "ChronosHUDLayer.h"
+#include "ChronosLetter.h"
+#include "ChronosControls.h"
+#include "ChronosGamepad.h"
+#include "ChronosGraphicsSettings.h"
+#include "ChronosMenuArt.h"
 
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "Engine/Font.h"
@@ -11,6 +16,7 @@
 #include "Rendering/SlateRenderer.h"
 #include "Styling/CoreStyle.h"
 #include "Layout/Clipping.h"
+#include "Kismet/GameplayStatics.h"
 
 namespace
 {
@@ -196,6 +202,23 @@ FReply UChronosHUDLayer::NativeOnKeyDown(const FGeometry& Geometry, const FKeyEv
         SetMapZoomBounds();
         return FReply::Handled();
     }
+    if (Key == EKeys::Gamepad_FaceButton_Bottom)
+    {
+        if (!Event.IsRepeat()) PlaceMapPin(MapView(LayoutFor(this, Geometry).Size), PadMapCursor);
+        return FReply::Handled();
+    }
+    if (Key == EKeys::Gamepad_FaceButton_Left)
+    {
+        Waypoint.Reset(); WaypointLabel.Reset();
+        return FReply::Handled();
+    }
+    if (Key == EKeys::Gamepad_FaceButton_Top)
+    {
+        MapCenter = AtlasUV(Location);
+        SetMapZoomBounds();
+        PadMapCursor = FVector2D(.5);
+        return FReply::Handled();
+    }
     FVector2D Direction = FVector2D::ZeroVector;
     if (Key == EKeys::Gamepad_DPad_Left) Direction.X = -1;
     if (Key == EKeys::Gamepad_DPad_Right) Direction.X = 1;
@@ -210,15 +233,29 @@ FReply UChronosHUDLayer::NativeOnAnalogValueChanged(const FGeometry& Geometry, c
 {
     if (!bMapOpen) return Super::NativeOnAnalogValueChanged(Geometry, Event);
     const FKey Key = Event.GetKey();
-    if (FMath::Abs(Event.GetAnalogValue()) >= .32f && (Key == EKeys::Gamepad_LeftX || Key == EKeys::Gamepad_LeftY))
+    const double Value = FMath::Abs(Event.GetAnalogValue()) > .25f ? Event.GetAnalogValue() : 0.;
+    if (Key == EKeys::Gamepad_LeftX) PadCursorAxis.X = Value;
+    else if (Key == EKeys::Gamepad_LeftY) PadCursorAxis.Y = -Value;
+    else if (Key == EKeys::Gamepad_RightX) PadPanAxis.X = Value;
+    else if (Key == EKeys::Gamepad_RightY) PadPanAxis.Y = -Value;
+    else return FReply::Unhandled();
+    return FReply::Handled();
+}
+
+void UChronosHUDLayer::NativeTick(const FGeometry& Geometry, float DeltaTime)
+{
+    Super::NativeTick(Geometry, DeltaTime);
+    if (!bMapOpen)
     {
-        const float Move = Event.GetAnalogValue() / FMath::Max(1., MapZoom);
-        const FVector2D Direction = Key == EKeys::Gamepad_LeftX ? FVector2D(Move, 0) : FVector2D(0, -Move);
-        MapCenter += Direction * (ChronosAtlas::MapMax - ChronosAtlas::MapMin) * GetWorld()->GetDeltaSeconds();
-        SetMapZoomBounds();
-        return FReply::Handled();
+        PadCursorAxis = PadPanAxis = FVector2D::ZeroVector;
+        return;
     }
-    return FReply::Unhandled();
+    PadMapCursor += PadCursorAxis.GetClampedToMaxSize(1.) * FMath::Min(DeltaTime, .1f) * .65;
+    PadMapCursor.X = FMath::Clamp(PadMapCursor.X, .015, .985);
+    PadMapCursor.Y = FMath::Clamp(PadMapCursor.Y, .015, .985);
+    MapCenter += PadPanAxis.GetClampedToMaxSize(1.) * (ChronosAtlas::MapMax - ChronosAtlas::MapMin)
+        * FMath::Min(DeltaTime, .1f) * .5 / MapZoom;
+    SetMapZoomBounds();
 }
 
 FReply UChronosHUDLayer::NativeOnMouseWheel(const FGeometry& Geometry, const FPointerEvent& Event)
@@ -285,6 +322,7 @@ void UChronosHUDLayer::InitializeArt()
     Load(TEXT("Quest"), TEXT("Panels/T_UI_Panel_QuestBack_1024x640"));
     Load(TEXT("Plaque"), TEXT("Panels/T_UI_Objective_Plaque_1024x256"));
     Load(TEXT("Key"), TEXT("Panels/T_UI_Control_Keycap_192"));
+    Load(TEXT("LetterZoom"), TEXT("Icons/lupa_128_RGBA"));
     const TCHAR* PlaceIcons[] = {TEXT("Home"), TEXT("Morgue"), TEXT("Church"), TEXT("Restroom"),
         TEXT("Graves"), TEXT("Playground"), TEXT("Flowers"), TEXT("Altar"), TEXT("Entrance"),
         TEXT("Parking"), TEXT("Crematorium")};
@@ -399,10 +437,21 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
     };
     auto DrawPlayer = [&](FVector2D Center, float Diameter)
     {
+        ++Layer;
         if (const FSlateBrush* Brush = Brushes.Find(TEXT("Player")))
             FSlateDrawElement::MakeRotatedBox(Elements, Layer,
                 Geom(Center - FVector2D(Diameter * .5), FVector2D(Diameter)), Brush,
                 ESlateDrawEffect::None, FMath::DegreesToRadians(Heading));
+        const double Angle = FMath::DegreesToRadians(Heading);
+        const FVector2D Forward(FMath::Sin(Angle), -FMath::Cos(Angle));
+        const FVector2D Right(FMath::Cos(Angle), FMath::Sin(Angle));
+        const FVector2D Tip = Center + Forward * Diameter * .45;
+        const FVector2D Left = Center - Forward * Diameter * .3 - Right * Diameter * .27;
+        const FVector2D RightPoint = Center - Forward * Diameter * .3 + Right * Diameter * .27;
+        ++Layer;
+        Line(Left, Tip, FLinearColor::Black, 6.f); Line(Tip, RightPoint, FLinearColor::Black, 6.f);
+        ++Layer;
+        Line(Left, Tip, Gold, 3.f); Line(Tip, RightPoint, Gold, 3.f);
     };
     const FChronosTask* Primary = Tasks.FindByPredicate([](const FChronosTask& Task)
     {
@@ -412,26 +461,71 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
     {
         return Places.IsValidIndex(Task.PlaceIndex) ? Places[Task.PlaceIndex].Label : Task.Description;
     };
+    double DailyTasksHeight = 0.;
     auto DrawTasks = [&](FVector2D Origin, FVector2D Dimensions, const TCHAR* Title, bool bJournal)
     {
-        Panel(TEXT("Quest"), Origin, Dimensions);
-        Icon(TEXT("Primary"), Origin + FVector2D(31, 39), 27.f);
-        Text(Title, Origin + FVector2D(52, 23), 23.f, Gold);
-        const float RowHeight = bJournal ? 38.f : 30.f;
-        const int32 Rows = FMath::Max(1, FMath::FloorToInt((Dimensions.Y - 80.) / RowHeight));
-        const int32 Columns = bJournal ? FMath::Min(2, FMath::Max(1, FMath::DivideAndRoundUp(Tasks.Num(), Rows))) : 1;
+        const int32 Columns = bJournal && Tasks.Num() > 6 ? 2 : 1;
+        const int32 Rows = FMath::Max(1, FMath::DivideAndRoundUp(Tasks.Num(), Columns));
         const double ColumnWidth = (Dimensions.X - 48.) / Columns;
-        if (Tasks.IsEmpty()) Text(TEXT("No hay tareas asignadas."), Origin + FVector2D(23, 72), 16.f, Ivory);
-        for (int32 Index = 0; Index < FMath::Min(Tasks.Num(), Rows * Columns); ++Index)
+        const float FontHeight = bJournal ? 17.f : 15.f;
+        const FSlateFontInfo Face(Serif.Get(), FMath::Max(1, FMath::RoundToInt(FontHeight * Scale)));
+        const auto Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+        const double LineHeight = Measure->Measure(TEXT("Ag"), Face).Y / Scale;
+        const double TextWidth = ColumnWidth - 100.;
+        TArray<TArray<FString>> Descriptions;
+        TArray<double> RowHeights;
+        RowHeights.Init(0., Rows);
+        for (int32 Index = 0; Index < Tasks.Num(); ++Index)
         {
-            const FChronosTask& Task = Tasks[Index];
-            const FVector2D Row = Origin + FVector2D(24 + (Index / Rows) * ColumnWidth, 74 + (Index % Rows) * RowHeight);
-            Art(Task.bCompleted ? TEXT("Done") : TEXT("Todo"), Row, FVector2D(19, 19));
+            TArray<FString> Words;
+            Tasks[Index].Description.ParseIntoArrayWS(Words);
+            auto& Lines = Descriptions.AddDefaulted_GetRef();
+            FString Current;
+            for (const FString& Word : Words)
+            {
+                const FString Candidate = Current.IsEmpty() ? Word : Current + TEXT(" ") + Word;
+                if (!Current.IsEmpty() && Measure->Measure(Candidate, Face).X / Scale > TextWidth)
+                {
+                    Lines.Add(Current);
+                    Current = Word;
+                }
+                else Current = Candidate;
+            }
+            Lines.Add(Current);
+            RowHeights[Index % Rows] = FMath::Max(RowHeights[Index % Rows], FMath::Max(23., Lines.Num() * LineHeight + 12.));
+        }
+        double ContentHeight = 0.;
+        for (const double Height : RowHeights) ContentHeight += Height;
+        Dimensions.Y = FMath::Max(Dimensions.Y, 92. + ContentHeight);
+        if (!bJournal) DailyTasksHeight = Dimensions.Y;
+        if (const auto* Existing = Brushes.Find(TEXT("Quest")))
+        {
+            FSlateBrush Background = *Existing, Divider = *Existing;
+            Background.SetUVRegion(FBox2f(FVector2f(0, .16f), FVector2f(1, 1)));
+            Divider.SetUVRegion(FBox2f(FVector2f(0, .132f), FVector2f(1, .144f)));
+            Box(Origin, Dimensions, &Background, FLinearColor::White);
+            Box(Origin + FVector2D(0, 60), FVector2D(Dimensions.X, 4), &Divider, FLinearColor::White);
+        }
+        else Panel(TEXT("Quest"), Origin, Dimensions);
+        Icon(TEXT("Primary"), Origin + FVector2D(31, 30), 27.f);
+        Text(Title, Origin + FVector2D(52, 12), 23.f, Gold);
+        if (Tasks.IsEmpty()) Text(TEXT("No hay tareas asignadas."), Origin + FVector2D(23, 80), 16.f, Ivory);
+        for (int32 Index = 0; Index < Tasks.Num(); ++Index)
+        {
+            const auto& Task = Tasks[Index];
+            double RowTop = 80.;
+            for (int32 Prior = 0; Prior < Index % Rows; ++Prior) RowTop += RowHeights[Prior];
+            const double RowHeight = RowHeights[Index % Rows];
+            const FVector2D Row = Origin + FVector2D(24 + (Index / Rows) * ColumnWidth, RowTop);
+            Art(Task.bCompleted ? TEXT("Done") : TEXT("Todo"), Row + FVector2D(0, (RowHeight - 19.) * .5), FVector2D(19));
+            const auto Color = Task.bCompleted ? Opacity(Ivory, .65f) : Ivory;
+            const auto& Lines = Descriptions[Index];
+            const double TextTop = (RowHeight - Lines.Num() * LineHeight) * .5;
+            for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+                Text(Lines[LineIndex], Row + FVector2D(27, TextTop + LineIndex * LineHeight), FontHeight, Color);
             const FString Progress = Task.ProgressText.IsEmpty() ? (Task.bCompleted ? TEXT("1/1") : TEXT("0/1")) : Task.ProgressText;
-            const int32 MaxChars = bJournal ? 57 : 36;
-            const FString Description = Task.Description.Len() <= MaxChars ? Task.Description : Task.Description.Left(MaxChars - 1) + TEXT("…");
-            Text(Description, Row + FVector2D(27, 0), bJournal ? 17.f : 15.f, Task.bCompleted ? Opacity(Ivory, .55f) : Ivory);
-            Text(Progress, Row + FVector2D(ColumnWidth - 3, 0), 15.f, Task.bCompleted ? Opacity(Ivory, .55f) : Gold, 1.f);
+            Text(Progress, Row + FVector2D(ColumnWidth - 3, (RowHeight - LineHeight) * .5), FontHeight,
+                Task.bCompleted ? Opacity(Ivory, .55f) : Gold, 1.f);
         }
     };
 
@@ -569,6 +663,18 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
             Box(Sidebar, FVector2D(338, View.Size.Y + 12.), White, FLinearColor(.022f, .022f, .023f, .98f));
             ++Layer;
             DrawMap(View.Position + View.Size * .5, 0, &View);
+            const auto* ActivePad = UChronosGamepad::Get(GetOwningPlayer());
+            const bool bPad = ActivePad && ActivePad->IsGamepadActive();
+            if (bPad)
+            {
+                const FVector2D CursorPosition = View.Position + View.Size * PadMapCursor;
+                ++Layer;
+                Line(CursorPosition - FVector2D(12, 0), CursorPosition + FVector2D(12, 0), FLinearColor::Black, 6.f);
+                Line(CursorPosition - FVector2D(0, 12), CursorPosition + FVector2D(0, 12), FLinearColor::Black, 6.f);
+                ++Layer;
+                Line(CursorPosition - FVector2D(12, 0), CursorPosition + FVector2D(12, 0), Gold, 2.f);
+                Line(CursorPosition - FVector2D(0, 12), CursorPosition + FVector2D(0, 12), Gold, 2.f);
+            }
             ++Layer;
             Text(TEXT("Mapa del cementerio"), View.Position + FVector2D(0, -64), 32.f, Ivory);
             Text(TEXT("N"), View.Position + FVector2D(15, 12), 21.f, Ivory);
@@ -606,10 +712,10 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
             }
             const FVector2D Footer = Sidebar + FVector2D(25, View.Size.Y - 156.);
             Line(Footer - FVector2D(0, 19), Footer + FVector2D(285, -19), Stroke, 1.f);
-            Text(TEXT("Clic izq.    Marcar destino"), Footer, 14.f, Ivory);
-            Text(TEXT("Arrastrar   Mover mapa"), Footer + FVector2D(0, 24), 14.f, Ivory);
-            Text(TEXT("Clic der.    Quitar pin"), Footer + FVector2D(0, 48), 14.f, Ivory);
-            Text(TEXT("Rueda      Acercar / alejar"), Footer + FVector2D(0, 72), 14.f, Ivory);
+            Text(bPad ? ActivePad->Prompt(EKeys::Gamepad_FaceButton_Bottom).ToString() + TEXT("   Marcar destino") : TEXT("Clic izq.    Marcar destino"), Footer, 14.f, Ivory);
+            Text(bPad ? TEXT("L   Cursor     R   Mover mapa") : TEXT("Arrastrar   Mover mapa"), Footer + FVector2D(0, 24), 14.f, Ivory);
+            Text(bPad ? ActivePad->Prompt(EKeys::Gamepad_FaceButton_Left).ToString() + TEXT("   Quitar pin") : TEXT("Clic der.    Quitar pin"), Footer + FVector2D(0, 48), 14.f, Ivory);
+            Text(bPad ? ActivePad->Prompt(EKeys::Gamepad_LeftShoulder).ToString() + TEXT(" / ") + ActivePad->Prompt(EKeys::Gamepad_RightShoulder).ToString() + TEXT("   Zoom") : TEXT("Rueda      Acercar / alejar"), Footer + FVector2D(0, 72), 14.f, Ivory);
             if (MapKeyText.Len()) Text(MapKeyText + TEXT("             Cerrar"), Footer + FVector2D(0, 96), 14.f, Ivory);
             if (!bAtlasReady) Text(TEXT("Cartografía en preparación"), View.Position + View.Size * .5, 20.f, Ivory, .5f);
             return Layer;
@@ -635,16 +741,29 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
         if (bGuided)
         {
             const FVector2D Origin(302 + FMath::Max(0.f, 280.f * (MapScale - 1.f)), 40);
-            Panel(TEXT("Legend"), Origin, FVector2D(228, 160));
-            Icon(TEXT("Player"), Origin + FVector2D(26, 32), 20.f);
-            Icon(TEXT("Primary"), Origin + FVector2D(26, 62), 24.f);
-            Icon(TEXT("Secondary"), Origin + FVector2D(26, 92), 22.f);
+            const TCHAR* Labels[] = {TEXT("Tu posición"), TEXT("Objetivo principal"), TEXT("Objetivo secundario"), TEXT("Ruta de misión")};
+            const FSlateFontInfo Face(Serif.Get(), FMath::Max(1, FMath::RoundToInt(16 * Scale)));
+            const auto Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+            double TextWidth = 0., TextHeight = 0.;
+            for (const auto* Label : Labels)
+            {
+                const auto Extent = Measure->Measure(Label, Face) / Scale;
+                TextWidth = FMath::Max(TextWidth, Extent.X);
+                TextHeight = FMath::Max(TextHeight, Extent.Y);
+            }
+            const double RowHeight = FMath::Max(24., TextHeight) + 8.;
+            const FVector2D LegendSize(43. + TextWidth + 18., 24. + 4. * RowHeight);
+            Box(Origin, LegendSize, White, FLinearColor(.012f, .011f, .008f, .86f));
+            Panel(TEXT("Legend"), Origin, LegendSize);
+            const double FirstCenter = 12. + RowHeight * .5;
+            Icon(TEXT("Player"), Origin + FVector2D(26, FirstCenter), 20.f);
+            Icon(TEXT("Primary"), Origin + FVector2D(26, FirstCenter + RowHeight), 24.f);
+            Icon(TEXT("Secondary"), Origin + FVector2D(26, FirstCenter + RowHeight * 2), 22.f);
             for (int32 Offset = 0; Offset < 18; Offset += 6)
-                Line(Origin + FVector2D(18 + Offset, 122), Origin + FVector2D(21 + Offset, 122), Gold, 1.6f);
-            Text(TEXT("Tu posición"), Origin + FVector2D(43, 21), 16.f, Ivory);
-            Text(TEXT("Objetivo principal"), Origin + FVector2D(43, 51), 16.f, Ivory);
-            Text(TEXT("Objetivo secundario"), Origin + FVector2D(43, 81), 16.f, Ivory);
-            Text(TEXT("Ruta de misión"), Origin + FVector2D(43, 111), 16.f, Ivory);
+                Line(Origin + FVector2D(18 + Offset, FirstCenter + RowHeight * 3),
+                    Origin + FVector2D(21 + Offset, FirstCenter + RowHeight * 3), Gold, 1.6f);
+            for (int32 Index = 0; Index < UE_ARRAY_COUNT(Labels); ++Index)
+                Text(Labels[Index], Origin + FVector2D(43, FirstCenter + Index * RowHeight - TextHeight * .5), 16.f, Ivory);
         }
         const FVector2D ClockOrigin(W - 358, 17);
 
@@ -663,7 +782,7 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
         if (Waypoint.IsSet() || (Primary && !bGuided))
         {
             const bool bPin = Waypoint.IsSet();
-            const FVector2D Objective(W - 399, (bGuided && !Tasks.IsEmpty() ? 411 : 131) + CalendarExtra);
+            const FVector2D Objective(W - 399, (bGuided && !Tasks.IsEmpty() ? 145. + DailyTasksHeight : 131.) + CalendarExtra);
             Box(Objective, FVector2D(376, 53), White, FLinearColor(.017f, .016f, .015f, .91f));
             Line(Objective, Objective + FVector2D(376, 0), Opacity(bPin ? PinColor : Gold, .48f), 1.f);
             if (bPin) Pin(Objective + FVector2D(23, 26), 33.f);
@@ -731,7 +850,7 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
         const FVector2D TrackSize(288, 12.5);
         if (Stamina > 0.f)
         {
-            Elements.PushClip(FSlateClippingZone(Geom(Track, FVector2D(TrackSize.X * Stamina, TrackSize.Y))));
+            Elements.PushClip(FSlateClippingZone(Geom(Track, FVector2D(TrackSize.X * FMath::Max(0.f, ShownStamina), TrackSize.Y))));
             Art(Fill, Track, TrackSize, StaminaOpacity);
             Elements.PopClip();
         }
@@ -767,20 +886,92 @@ int32 UChronosHUDLayer::NativePaint(const FPaintArgs& Args, const FGeometry& Geo
         Text(TEXT("Linterna"), Origin + FVector2D(209, 66), 11.f, Opacity(Ivory, BatteryOpacity), .5f);
         ResetScale();
     }
-    if (bGuided)
+    if (const auto* Letter = LetterReader.Get(); Letter && Letter->IsReading())
     {
-        auto KeyHint = [&](const FString& Key, const TCHAR* Label, double Y)
+        const auto* Pad = UChronosGamepad::Get(GetOwningPlayer());
+        const bool bPad = Pad && Pad->IsGamepadActive();
+        const double HintBottom = Stamina >= 0.f ? StaminaTop : LifeTop;
+        const FVector2D Origin(34, HintBottom - 136.);
+        const FVector2D Dimensions(412, 126);
+        ++Layer;
+        Box(Origin, Dimensions, &ChronosMenuArt::Premium(TEXT("panel_advertencia_484x136")), FLinearColor::White);
+        ++Layer;
+        Art(TEXT("LetterZoom"), Origin + FVector2D(22, 14), FVector2D(24));
+        Text(FString::Printf(TEXT("Lectura  ·  %d%%"), Letter->ZoomPercent()), Origin + FVector2D(53, 13), 16, Gold);
+        const auto Hint = [&](FKey Key, const TCHAR* Label, FVector2D Offset)
         {
-            if (Key.IsEmpty()) return;
+            const FVector2D Position = Origin + Offset;
+            const bool bPlayStation = Pad && Pad->IsPlayStation();
+            const auto* Glyph = Key.IsGamepadKey() ? ChronosControls::Glyph(Key, bPlayStation) : nullptr;
+            if (Glyph)
+                Box(Position, FVector2D(27), Glyph, FLinearColor::White);
+            else
+            {
+                Art(TEXT("Key"), Position, FVector2D(35, 26));
+                Text(Key.IsGamepadKey() ? UChronosGamepad::KeyLabel(Key, bPlayStation).ToString() : Key.GetDisplayName().ToString(),
+                    Position + FVector2D(17.5, 4), 12, Gold, .5f);
+            }
+            Text(Label, Position + FVector2D(Glyph ? 34 : 42, 3), 14, Ivory);
+        };
+        if (bPad)
+        {
+            Hint(EKeys::Gamepad_LeftShoulder, TEXT("Alejar"), FVector2D(22, 49));
+            Hint(EKeys::Gamepad_RightShoulder, TEXT("Acercar"), FVector2D(148, 49));
+            Hint(EKeys::Gamepad_FaceButton_Right, TEXT("Cerrar"), FVector2D(278, 49));
+            Text(TEXT("Stick derecho  ·  Mover carta"), Origin + FVector2D(22, 88), 14, Ivory);
+        }
+        else
+        {
+            Text(TEXT("Rueda  ·  Zoom"), Origin + FVector2D(22, 53), 14, Ivory);
+            Hint(Letter->CloseKey(), TEXT("Cerrar"), FVector2D(238, 49));
+            Text(TEXT("Ratón o flechas  ·  Mover carta"), Origin + FVector2D(22, 88), 14, Ivory);
+        }
+    }
+    else if (bGuided || !InventoryKeyText.IsEmpty())
+    {
+        const auto* Pad = UChronosGamepad::Get(GetOwningPlayer());
+        auto KeyHint = [&](FKey Key, const FString& Available, const TCHAR* Label, double Y)
+        {
+            if (Available.IsEmpty() || !Key.IsValid()) return;
             const FVector2D Origin(43, Y);
-            Art(TEXT("Key"), Origin, FVector2D(29));
-            Text(Key, Origin + FVector2D(14.5, 3), 14.f, FLinearColor(.013f, .012f, .009f), .5f);
-            Text(Label, Origin + FVector2D(39, 3), 16.f, Ivory);
+            double LabelX = 46.;
+            const auto* Glyph = Key.IsGamepadKey() ? ChronosControls::Glyph(Key, Pad && Pad->IsPlayStation()) : nullptr;
+            const FSlateFontInfo Face(Serif.Get(), FMath::Max(1, FMath::RoundToInt(14 * Scale)));
+            const auto Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+            const FString KeyboardLabel = Key.IsGamepadKey()
+                ? UChronosGamepad::KeyLabel(Key, Pad && Pad->IsPlayStation()).ToString()
+                : Key.GetDisplayName().ToString();
+            const FVector2D KeySize = Measure->Measure(KeyboardLabel, Face) / Scale;
+            if (!Glyph) LabelX = FMath::Max(LabelX, KeySize.X + 22.);
+            const FSlateFontInfo LabelFace(Serif.Get(), FMath::Max(1, FMath::RoundToInt(16 * Scale)));
+            const FVector2D LabelSize = Measure->Measure(Label, LabelFace) / Scale;
+            Box(Origin - FVector2D(8, 0), FVector2D(LabelX + LabelSize.X + 22., 40), White, FLinearColor(.012f, .011f, .008f, .85f));
+            if (Glyph) Box(Origin + FVector2D(0, 4), FVector2D(32), Glyph, FLinearColor::White);
+            else
+            {
+                Art(TEXT("Key"), Origin + FVector2D(-3, 2), FVector2D(LabelX - 4., 36), 1.f);
+                Text(KeyboardLabel, Origin + FVector2D((LabelX - 10.) * .5, (40. - KeySize.Y) * .5), 14.f, Gold, .5f);
+            }
+            Text(Label, Origin + FVector2D(LabelX, (40. - LabelSize.Y) * .5), 16.f, Ivory);
         };
         const double HintBottom = Stamina >= 0.f ? StaminaTop : LifeTop;
-        KeyHint(MapKeyText, TEXT("Mapa completo"), HintBottom - 100);
-        KeyHint(JournalKeyText, TEXT("Libreta de tareas"), HintBottom - 68);
-        KeyHint(ModeKeyText, TEXT("Modo del HUD"), HintBottom - 36);
+        if (bGuided)
+        {
+            KeyHint(MapHintKey, MapKeyText, TEXT("Mapa completo"), HintBottom - 194);
+            KeyHint(JournalHintKey, JournalKeyText, TEXT("Libreta de tareas"), HintBottom - 146);
+            KeyHint(ModeHintKey, ModeKeyText, TEXT("Modo del HUD"), HintBottom - 98);
+        }
+        KeyHint(InventoryHintKey, InventoryKeyText, TEXT("Inventario"), HintBottom - 50);
+    }
+    if (!bMapOpen && !UGameplayStatics::IsGamePaused(this) && ChronosGraphics::LowVideoMemory())
+    {
+        const FVector2D Origin(W - 365, H - 104);
+        ++Layer;
+        Box(Origin, FVector2D(339, 76), &ChronosMenuArt::Premium(TEXT("panel_advertencia_484x136")), FLinearColor::White);
+        ++Layer;
+        Box(Origin + FVector2D(21, 18), FVector2D(30), &ChronosMenuArt::Premium(TEXT("icono_advertencia_48x48")), FLinearColor::White);
+        Text(TEXT("VRAM BAJA"), Origin + FVector2D(65, 16), 21.f, FLinearColor::FromSRGBColor(FColor(248, 119, 95)));
+        Text(TEXT("Presupuesto de vídeo casi agotado"), Origin + FVector2D(65, 43), 14.f, Ivory);
     }
     return Layer;
 }

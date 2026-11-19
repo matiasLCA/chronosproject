@@ -5,6 +5,6 @@
   "FriendlyName": "The Chronos Curse HUD",
   "CanContainContent": false,
   "EnabledByDefault": false,
-  "Plugins": [{ "Name": "EnhancedInput", "Enabled": true }],
+  "Plugins": [{ "Name": "EnhancedInput", "Enabled": true }, { "Name": "ChronosGuardado", "Enabled": true }],
   "Modules": [{ "Name": "ChronosHUD", "Type": "Runtime", "LoadingPhase": "Default" }, { "Name": "ChronosHUDEditor", "Type": "Editor", "LoadingPhase": "Default" }]
 }
