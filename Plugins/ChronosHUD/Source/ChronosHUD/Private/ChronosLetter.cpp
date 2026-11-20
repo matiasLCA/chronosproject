@@ -33,15 +33,29 @@ void UChronosLetter::NativeConstruct()
     Super::NativeConstruct();
     auto* PC = GetOwningPlayer();
     auto* World = GetWorld();
-    auto* NoteClass = FindObject<UClass>(nullptr, TEXT("/Game/Letter/BP-Notas.BP-Notas_C"));
-    if (!PC || !World || !NoteClass) return;
-    const auto* WidgetProperty = FindFProperty<FObjectPropertyBase>(NoteClass, TEXT("widgetNota"));
-    if (!WidgetProperty) return;
-    for (TActorIterator<AActor> Note(World, NoteClass); Note; ++Note)
+    if (!PC || !World) return;
+    const struct
     {
-        if (WidgetProperty->GetObjectPropertyValue_InContainer(*Note) != this) continue;
-        Source = *Note;
-        break;
+        const TCHAR* ActorClass;
+        const TCHAR* WidgetProperty;
+    } Sources[] = {
+        {TEXT("/Game/Letter/BP-Notas.BP-Notas_C"), TEXT("widgetNota")},
+        {TEXT("/Game/Interactivo/notaGuardia/BP_NotaGuardia.BP_NotaGuardia_C"), TEXT("widgetNota")},
+        {TEXT("/Game/Interactivo/nota_pared/BP_NotaHolloway.BP_NotaHolloway_C"), TEXT("widgetHolloway")},
+    };
+    for (const auto& Binding : Sources)
+    {
+        auto* NoteClass = FindObject<UClass>(nullptr, Binding.ActorClass);
+        if (!NoteClass) continue;
+        const auto* WidgetProperty = FindFProperty<FObjectPropertyBase>(NoteClass, Binding.WidgetProperty);
+        if (!WidgetProperty || !IsA(WidgetProperty->PropertyClass)) continue;
+        for (TActorIterator<AActor> Note(World, NoteClass); Note; ++Note)
+        {
+            if (WidgetProperty->GetObjectPropertyValue_InContainer(*Note) != this) continue;
+            Source = *Note;
+            break;
+        }
+        if (Source.IsValid()) break;
     }
     if (!Source.IsValid()) return;
 
@@ -108,8 +122,11 @@ void UChronosLetter::Close()
     auto* PC = GetOwningPlayer();
     auto* Note = Source.Get();
     auto* CloseNote = Note ? Note->FindFunction(TEXT("cerrarNota")) : nullptr;
-    if (CloseNote) Note->ProcessEvent(CloseNote, nullptr);
-    if (!PC) return;
+    if (!PC)
+    {
+        if (CloseNote) Note->ProcessEvent(CloseNote, nullptr);
+        return;
+    }
     if (!CloseNote)
     {
         PC->SetIgnoreMoveInput(false);
@@ -119,6 +136,8 @@ void UChronosLetter::Close()
     Mode.SetConsumeCaptureMouseDown(false);
     PC->SetInputMode(Mode);
     PC->bShowMouseCursor = bShowCursorBefore;
+    // The note can start another scene and transfer focus as part of closing.
+    if (CloseNote) Note->ProcessEvent(CloseNote, nullptr);
 }
 
 void UChronosLetter::AdjustZoom(double Delta)

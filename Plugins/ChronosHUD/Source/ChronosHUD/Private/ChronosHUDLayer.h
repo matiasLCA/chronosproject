@@ -151,6 +151,7 @@ public:
     virtual void Deinitialize() override;
     virtual void OnWorldBeginPlay(UWorld& World) override;
     void SetLetterReader(UChronosLetter* Reader);
+    bool IsReadingLetter() const;
 
     UFUNCTION(BlueprintCallable, Category="Chronos|HUD")
     void SetHUDMode(EChronosHUDMode NewMode);

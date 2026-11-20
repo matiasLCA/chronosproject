@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.7",
+	"EngineAssociation": "5.8",
 	"Category": "",
 	"Description": "",
 	"Plugins": [
@@ -22,6 +22,20 @@
 		{
 			"Name": "MetaHumanCharacter",
 			"Enabled": true
+		},
+		{
+			"Name": "ChronosHUD",
+			"Enabled": true
+		},
+		{
+			"Name": "GameInputWindows",
+			"Enabled": true,
+			"PlatformAllowList": [
+				"Win64"
+			],
+			"SupportedTargetPlatforms": [
+				"Win64"
+			]
 		}
 	]
 }

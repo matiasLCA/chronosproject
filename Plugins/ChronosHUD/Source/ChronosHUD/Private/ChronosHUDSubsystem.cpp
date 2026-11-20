@@ -440,6 +440,12 @@ void UChronosHUDSubsystem::SetLetterReader(UChronosLetter* Reader)
     if (HUD) HUD->LetterReader = Reader;
 }
 
+bool UChronosHUDSubsystem::IsReadingLetter() const
+{
+    const auto* Letter = HUD ? HUD->LetterReader.Get() : nullptr;
+    return Letter && Letter->IsReading();
+}
+
 void UChronosHUDSubsystem::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);

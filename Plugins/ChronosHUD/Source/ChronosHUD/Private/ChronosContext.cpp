@@ -4,6 +4,7 @@
 #include "ChronosInventory.h"
 #include "ChronosFridge.h"
 #include "ChronosGamepad.h"
+#include "ChronosHUDLayer.h"
 #include "ChronosMenuArt.h"
 #include "ChronosUrns.h"
 #include "Blueprint/UserWidget.h"
@@ -11,10 +12,13 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Font.h"
 #include "Engine/World.h"
+#include "Fonts/FontMeasure.h"
+#include "Framework/Application/SlateApplication.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Rendering/DrawElements.h"
+#include "Rendering/SlateRenderer.h"
 #include "Styling/CoreStyle.h"
 #include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
@@ -67,6 +71,8 @@ FKey UChronosContext::ActionKey(APlayerController* Player, FName Action, FKey Fa
 bool UChronosInteraction::CanPresentThought(AActor* Player)
 {
     if (!IsValid(Player) || Player->GetWorld()->IsPaused() || UChronosConversation::IsActive(Player) || UChronosInventory::IsOpen(Player)) return false;
+    const auto* HUD = Player->GetWorld()->GetSubsystem<UChronosHUDSubsystem>();
+    if (HUD && HUD->IsReadingLetter()) return false;
     const auto* Intro = FindFProperty<FBoolProperty>(Player->GetClass(), TEXT("enDespertar"));
     if (Intro && Intro->GetPropertyValue_InContainer(Player)) return false;
     const auto* Pawn = Cast<APawn>(Player);
@@ -217,7 +223,7 @@ void UChronosContext::Update(AActor* Player, bool bBlocked)
     {
         const FString Class = Target->GetClass()->GetName();
         const TCHAR* Label = TEXT("Interactuar");
-        if (Class.StartsWith(TEXT("BP-Notas"))) Label = TEXT("Leer carta");
+        if (Class.StartsWith(TEXT("BP-Notas")) || Class.StartsWith(TEXT("BP_Nota"))) Label = TEXT("Leer carta");
         else if (Class.Contains(TEXT("Visitante"))) Label = TEXT("Hablar");
         else if (Class.Contains(TEXT("slotAnfora"))) Label = TEXT("Usar estante");
         else if (Class.Contains(TEXT("anfora"))) Label = TEXT("Recoger ánfora");
@@ -240,22 +246,38 @@ int32 UChronosContext::NativePaint(const FPaintArgs& Args, const FGeometry& Geom
     const auto* Pad = UChronosGamepad::Get(GetOwningPlayer());
     auto Row = [&](FKey Key, const FText& Text, int32 Index)
     {
-        const FVector2f Dimensions(440 * Scale, 51 * Scale);
+        const auto* Glyph = Pad && Key.IsGamepadKey() ? ChronosControls::Glyph(Key, Pad->IsPlayStation()) : nullptr;
+        FSlateFontInfo Face(Font.Get(), FMath::Max(1, FMath::RoundToInt(18 * Scale)));
+        const auto Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+        const float Dpi = Geometry.GetAccumulatedLayoutTransform().GetScale();
+        const FText KeyLabel = Key.GetDisplayName();
+        const auto Width = [&](const FText& Value) { return Measure->Measure(Value, Face, Dpi).X / Dpi; };
+        const float MaxWidth = Size.X * .94f;
+        const float EndPadding = 22.f * Scale;
+        float TextOffset = 76.f * Scale;
+        float FullWidth = 0.f;
+        do
+        {
+            TextOffset = Glyph ? 76.f * Scale : FMath::Max(76.f * Scale, Width(KeyLabel) + 36.f * Scale);
+            FullWidth = TextOffset + Width(Text) + EndPadding;
+            if (FullWidth <= MaxWidth || Face.Size <= 1) break;
+            Face.Size -= 1;
+        } while (true);
+        const FVector2f Dimensions(FMath::Min(MaxWidth, FMath::Max(440.f * Scale, FMath::CeilToFloat(FullWidth))), 51.f * Scale);
         const FVector2f Position((Size.X - Dimensions.X) * .5f, Size.Y * .78f + Index * 58 * Scale);
         const auto Geom = Geometry.ToPaintGeometry(Dimensions, FSlateLayoutTransform(Position));
         FSlateDrawElement::MakeBox(Elements, ++Layer, Geom, &ChronosMenuArt::OptionsPanel(), ESlateDrawEffect::None, FLinearColor::White);
-        const auto* Glyph = Pad && Key.IsGamepadKey() ? ChronosControls::Glyph(Key, Pad->IsPlayStation()) : nullptr;
-        const FSlateFontInfo Face(Font.Get(), FMath::RoundToInt(18 * Scale));
-        const FLinearColor Gold(.88, .76, .59);
+        const float TextTop = (Dimensions.Y - Measure->Measure(Text, Face, Dpi).Y / Dpi) * .5f;
+        const FLinearColor Gold(.88f, .76f, .59f);
         if (Glyph)
             FSlateDrawElement::MakeBox(Elements, ++Layer,
                 Geometry.ToPaintGeometry(FVector2f(36 * Scale), FSlateLayoutTransform(Position + FVector2f(16, 7) * Scale)), Glyph);
         else
             FSlateDrawElement::MakeText(Elements, ++Layer,
-                Geometry.ToPaintGeometry(Dimensions, FSlateLayoutTransform(Position + FVector2f(20, 13) * Scale)),
-                Key.GetDisplayName(), Face, ESlateDrawEffect::None, Gold);
+                Geometry.ToPaintGeometry(Dimensions, FSlateLayoutTransform(Position + FVector2f(20.f * Scale, TextTop))),
+                KeyLabel, Face, ESlateDrawEffect::None, Gold);
         FSlateDrawElement::MakeText(Elements, ++Layer,
-            Geometry.ToPaintGeometry(Dimensions, FSlateLayoutTransform(Position + FVector2f(76, 13) * Scale)),
+            Geometry.ToPaintGeometry(Dimensions, FSlateLayoutTransform(Position + FVector2f(TextOffset, TextTop))),
             Text, Face, ESlateDrawEffect::None, Gold);
     };
     int32 Index = 0;
